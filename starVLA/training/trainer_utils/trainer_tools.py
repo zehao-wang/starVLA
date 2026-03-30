@@ -193,6 +193,96 @@ class TrainerUtils:
         return model
 
     @staticmethod
+    def unfreeze_action_token_embeddings(model, lora_cfg):
+        """
+        Selectively unfreeze ONLY the action token rows in embed_tokens for LoRA training.
+
+        All non-action token rows stay effectively frozen via a gradient mask hook —
+        their gradients are zeroed before the optimizer update, so the language token
+        embeddings are never modified.
+
+        Since lm_head.weight is tied to embed_tokens.weight in Qwen3-VL (same tensor),
+        this single hook also enables gradient flow through the action token logits in
+        lm_head with no extra work.
+
+        Requires:
+          - lora_cfg.vlm_module_path: dot-path to the HF CausalLM inside `model`
+            (e.g. "qwen_vl_interface.model")
+          - The VLM interface parent (e.g. model.qwen_vl_interface) must expose
+            _ACTION_TOKEN_MIN and _ACTION_TOKEN_MAX attributes.
+        """
+        vlm_module_path = lora_cfg.get("vlm_module_path", "qwen_vl_interface.model")
+        attrs = vlm_module_path.split(".")
+
+        # Navigate to the HF model to call get_input_embeddings()
+        vlm_module = model
+        for attr in attrs:
+            vlm_module = getattr(vlm_module, attr)
+
+        # Navigate to the VLM interface (parent of the HF model) for token range constants
+        interface = model
+        for attr in attrs[:-1]:
+            interface = getattr(interface, attr)
+
+        action_min = getattr(interface, "_ACTION_TOKEN_MIN", None)
+        action_max = getattr(interface, "_ACTION_TOKEN_MAX", None)
+        if action_min is None or action_max is None:
+            raise ValueError(
+                "Cannot find _ACTION_TOKEN_MIN / _ACTION_TOKEN_MAX on the VLM interface. "
+                "Make sure the model is loaded from an -Action variant "
+                "(produced by add_fast_tokens.sh)."
+            )
+
+        embed = vlm_module.get_input_embeddings()
+        embed.weight.requires_grad_(True)
+
+        def _action_only_grad_hook(grad):
+            # Zero out every row except the action token range [action_min, action_max]
+            masked = torch.zeros_like(grad)
+            masked[action_min : action_max + 1] = grad[action_min : action_max + 1]
+            return masked
+
+        embed.weight.register_hook(_action_only_grad_hook)
+
+        if dist.get_rank() == 0:
+            n_action = action_max - action_min + 1
+            print(
+                f"Action-only embedding training enabled: "
+                f"rows [{action_min}, {action_max}] ({n_action} tokens) will receive gradients; "
+                f"all other embedding rows are masked to zero gradient."
+            )
+            print(f"  embed_tokens.weight.requires_grad = {embed.weight.requires_grad}  "
+                  f"| shape = {tuple(embed.weight.shape)}")
+
+            # Verify lm_head weight tying: in Qwen3-VL lm_head.weight should be the same
+            # tensor as embed_tokens.weight.  If untied, gradients through lm_head action
+            # logits would NOT flow back to embed_tokens, so action token output predictions
+            # would not be learned.
+            try:
+                lm_head = vlm_module.base_model.model.lm_head
+                is_tied = lm_head.weight is embed.weight
+                print(
+                    f"  lm_head.weight is embed_tokens.weight (tied) = {is_tied}  "
+                    f"| lm_head.weight.requires_grad = {lm_head.weight.requires_grad}"
+                )
+                if not is_tied:
+                    raise RuntimeError(
+                        "lm_head.weight is NOT tied to embed_tokens.weight. "
+                        "train_action_embeddings=True requires weight tying so that "
+                        "action token output logits receive gradient updates. "
+                        "Check the model's tie_word_embeddings config or use an -Action variant "
+                        "produced by add_fast_tokens.sh."
+                    )
+            except AttributeError as e:
+                raise RuntimeError(
+                    "Cannot access vlm_module.base_model.model.lm_head to verify lm_head weight tying. "
+                    "train_action_embeddings=True requires lm_head to be tied to embed_tokens "
+                    "so that action token output logits receive gradient updates."
+                ) from e
+
+        return model
+
+    @staticmethod
     def apply_lora_to_vlm(model, lora_cfg):
         """
         Apply PEFT LoRA adapters to the VLM backbone only.
@@ -263,6 +353,19 @@ class TrainerUtils:
         print(
             f"# Parameters (in millions): {num_params / 10**6:.3f} Total, {num_trainable_params / 10**6:.3f} Trainable"
         )
+
+        # Log requires_grad status for action-related key parameters
+        key_suffixes = ("embed_tokens.weight", "lm_head.weight")
+        seen_data_ptrs = {}  # data_ptr -> first name, to detect tied tensors
+        for name, param in model.named_parameters():
+            if any(name.endswith(s) for s in key_suffixes):
+                tied_note = ""
+                if param.data_ptr() in seen_data_ptrs:
+                    tied_note = f"  [tied to {seen_data_ptrs[param.data_ptr()]}]"
+                else:
+                    seen_data_ptrs[param.data_ptr()] = name
+                print(f"  {name}: requires_grad={param.requires_grad}  shape={tuple(param.shape)}{tied_note}")
+
         return num_params, num_trainable_params
 
     @staticmethod

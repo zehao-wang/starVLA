@@ -125,6 +125,10 @@ class VLATrainer(TrainerUtils):
         lora_cfg = getattr(self.config.trainer, "lora", None)
         if lora_cfg and getattr(lora_cfg, "enable", False):
             self.model = self.apply_lora_to_vlm(self.model, lora_cfg)
+            if getattr(lora_cfg, "train_action_embeddings", False):
+                # Unfreeze only action token rows in embed_tokens (+ tied lm_head).
+                # All other language embedding rows remain frozen via a gradient mask hook.
+                self.model = self.unfreeze_action_token_embeddings(self.model, lora_cfg)
             # Rebuild optimizer after LoRA so it only contains trainable (requires_grad=True) params
             self.optimizer, self.lr_scheduler = setup_optimizer_and_scheduler(self.model, self.config)
 

@@ -1,5 +1,5 @@
 # Copyright 2025 starVLA community. All rights reserved.
-# Licensed under the MIT License, Version 1.0 (the "License"); 
+# Licensed under the MIT License, Version 1.0 (the "License");
 # Implemented by [Jinhui YE / HKUST University] in [2025].
 
 
@@ -23,6 +23,9 @@ def add_new_tokens(
     """
     Add new tokens into the model and tokenizer (if they don't already exist).
     init_strategy: avg / normal / zero
+      - avg:    initialize each new embedding as the mean of all existing embeddings
+      - normal: random normal initialization (mean=0, std=0.02)
+      - zero:   zero initialization
     Returns:
       - mapping: token_id mapping for all target tokens
       - added_now: number of tokens actually added to the tokenizer this time
@@ -90,7 +93,7 @@ def save_bundle(model, tokenizer, mapping: Dict[str, int], save_dir: str, proces
     try:
         src = processor_src or save_dir
         processor = AutoProcessor.from_pretrained(src, trust_remote_code=True)
-        # Sync processor.tokenizer 
+        # Sync processor.tokenizer
         processor.tokenizer = tokenizer
         processor.save_pretrained(save_dir)
         print(f"[OK] AutoProcessor saved to: {save_dir}")

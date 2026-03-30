@@ -13,27 +13,30 @@ framework:
     attn_implementation: flash_attention_2
     vl_hidden_dim: 2048
   dino:
+    # [UNUSED by QwenFast] QwenFast does not instantiate a DINO encoder.
     dino_backbone: dinov2_vits14
 
   action_model:
+    # [UNUSED by QwenFast] action_model_type / DiT-specific fields are only used
+    # by diffusion-based frameworks. QwenFast uses Fast_Action_Tokenizer (no nn.Parameters).
     action_model_type: DiT-B
-    hidden_size: 1024     # 和 DiT 最后的 projection 对应，用于 ActionDecoder
-    add_pos_embed: True
-    max_seq_len: 1024
-    action_dim: 14
-    state_dim: 14
-    future_action_window_size: 15  # time_horizon = future_action_window_size + 1 = 16, matches robotwin action_indices = range(16)
-    action_horizon: 16
-    past_action_window_size: 0
-    repeated_diffusion_steps: 8
-    noise_beta_alpha: 1.5
-    noise_beta_beta: 1.0
-    noise_s: 0.999
-    num_timestep_buckets: 1000
-    num_inference_timesteps: 4
-    num_target_vision_tokens: 32
-    diffusion_model_cfg:    # DiT Transformers 的参数
-      cross_attention_dim: 2048 # VLM 的 dim
+    hidden_size: 1024     # [UNUSED by QwenFast]
+    add_pos_embed: True   # [UNUSED by QwenFast]
+    max_seq_len: 1024     # [UNUSED by QwenFast]
+    action_dim: 14        # used by QwenFast: fast_tokenizer.action_dim
+    state_dim: 14         # [UNUSED by QwenFast] Fast_Action_Tokenizer does not use state
+    future_action_window_size: 15  # used by QwenFast: time_horizon = future_action_window_size + 1 = 16
+    action_horizon: 16    # [UNUSED by QwenFast code] code derives horizon from future_action_window_size+1; kept as documentation only
+    past_action_window_size: 0     # used by QwenFast: chunk_len = past + 1 + future
+    repeated_diffusion_steps: 8   # [UNUSED by QwenFast]
+    noise_beta_alpha: 1.5         # [UNUSED by QwenFast]
+    noise_beta_beta: 1.0          # [UNUSED by QwenFast]
+    noise_s: 0.999                # [UNUSED by QwenFast]
+    num_timestep_buckets: 1000    # [UNUSED by QwenFast]
+    num_inference_timesteps: 4    # [UNUSED by QwenFast]
+    num_target_vision_tokens: 32  # [UNUSED by QwenFast]
+    diffusion_model_cfg:          # [UNUSED by QwenFast] DiT Transformer parameters
+      cross_attention_dim: 2048
       dropout: 0.2
       final_dropout: true
       interleave_self_attention: true
@@ -57,7 +60,7 @@ datasets:
     video_backend: pyav
 
 trainer:
-  epochs: 100
+  epochs: 100         # [UNUSED by train_starvla.py] trainer uses max_train_steps, not epoch count
   max_train_steps: 1000000
   num_warmup_steps: 5000
   save_interval: 5000
@@ -65,20 +68,24 @@ trainer:
   learning_rate:
     base: 2e-04          # higher lr for LoRA adapters
     qwen_vl_interface: 2e-04
-    action_model: 1.0e-04
+    action_model: 1.0e-04  # [UNUSED by QwenFast] Fast_Action_Tokenizer has no nn.Parameters
   lr_scheduler_type: cosine_with_min_lr
   scheduler_specific_kwargs:
     min_lr: 1.0e-06
-  # vision encoder, embed_tokens, and action token embeddings are frozen by PEFT LoRA.
+  # LoRA note: vision encoder and all base weights are frozen by PEFT.
   # action_model (Fast_Action_Tokenizer) has no trainable params, no need to freeze.
+  # lora.train_action_embeddings selectively unfreezes ONLY the action token rows
+  # in embed_tokens via a gradient mask hook, leaving all language token embeddings frozen.
+  # In Qwen3-VL, lm_head.weight is tied to embed_tokens.weight (same tensor), so this
+  # also enables gradient flow through action token output logits in lm_head.
   freeze_modules: ''
   loss_scale:
     vla: 1.0
-    vlm: 0.1
-  repeated_diffusion_steps: 4
+    vlm: 0.1           # [UNUSED by train_starvla.py] only used in co-training scripts
+  repeated_diffusion_steps: 4   # [UNUSED by QwenFast]
   max_grad_norm: 1.0
-  warmup_ratio: 0.1
-  weight_decay: 0.0
+  warmup_ratio: 0.1             # [UNUSED by train_starvla.py] scheduler uses num_warmup_steps directly
+  weight_decay: 0.0             # [UNUSED] shadowed by optimizer.weight_decay below
   logging_frequency: 10
   gradient_clipping: 1.0
   gradient_accumulation_steps: 1
@@ -106,6 +113,13 @@ trainer:
       - gate_proj
       - up_proj
       - down_proj
+    # Selectively train ONLY action token rows in embed_tokens (rows _ACTION_TOKEN_MIN to
+    # _ACTION_TOKEN_MAX). All other language token embedding rows stay frozen via a gradient
+    # mask hook. Since lm_head.weight is tied to embed_tokens.weight in Qwen3-VL, this
+    # also enables gradient flow through action token output logits at no extra cost.
+    # Action token embeddings are randomly initialized by add_fast_tokens.sh
+    # (--init-strategy normal), so this should be enabled when training from scratch.
+    train_action_embeddings: true
 
   is_resume: false
   resume_epoch: null
