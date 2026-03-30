@@ -126,7 +126,7 @@ class Qwen_Dual(baseframework):
                 state_repeated = state.repeat(repeated_diffusion_steps, 1, 1)
             action_loss = self.action_model(last_hidden_repeated, actions_target_repeated, state_repeated)  # (B, chunk_len, action_dim)
 
-        return {"action_loss": action_loss}
+        return {"action_dit_loss": action_loss}
 
     @torch.inference_mode()
     def predict_action(

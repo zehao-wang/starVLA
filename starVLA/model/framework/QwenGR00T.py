@@ -131,7 +131,7 @@ class Qwen_GR00T(baseframework):
 
 
 
-        return {"action_loss": action_loss}
+        return {"action_dit_loss": action_loss}
 
     @torch.inference_mode()
     def predict_action(

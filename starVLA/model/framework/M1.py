@@ -166,7 +166,7 @@ class InternVLA_M1(baseframework):
             # perdition loss
             action_loss = self.action_model.loss(noise_pred, noise)
 
-        return {"action_loss": action_loss}
+        return {"action_dit_loss": action_loss}
 
     @torch.inference_mode()
     def predict_action(

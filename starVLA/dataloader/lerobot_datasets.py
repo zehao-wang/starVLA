@@ -111,7 +111,6 @@ if __name__ == "__main__":
     # debugpy.listen(("0.0.0.0", 10092))
     # print("🔍 Rank 0 waiting for debugger attach on port 10092...")
     # debugpy.wait_for_client()
-    args.config_yaml = "./examples/MultiRobot/train_files/starvla_cotrain_multiRobot.yaml"
     cfg = OmegaConf.load(args.config_yaml)
     # cfg.datasets.vla_data.data_mix = "robotwin"
     vla_dataset_cfg = cfg.datasets.vla_data
@@ -135,11 +134,23 @@ if __name__ == "__main__":
     dataset.save_dataset_statistics(output_dir / "dataset_statistics.json")
 
     from tqdm import tqdm
+    import numpy as np
     count = 0
     for batch in tqdm(train_dataloader, desc="Processing Batches"):
-        # print(batch)
-        # print(1)
+        if count == 0:
+            print("\n===== Batch[0] Contents =====")
+            sample = batch[0]
+            for key, val in sample.items():
+                if isinstance(val, np.ndarray):
+                    print(f"  {key}: ndarray shape={val.shape} dtype={val.dtype}")
+                elif isinstance(val, list):
+                    if len(val) > 0 and hasattr(val[0], 'size'):  # list of PIL Images
+                        print(f"  {key}: list[Image] len={len(val)} size={val[0].size} mode={val[0].mode}")
+                    else:
+                        print(f"  {key}: list len={len(val)} sample={val[0] if val else '(empty)'}")
+                else:
+                    print(f"  {key}: {type(val).__name__} = {val}")
+            print("=============================\n")
         if count > 100:
             break
         count += 1
-        pass

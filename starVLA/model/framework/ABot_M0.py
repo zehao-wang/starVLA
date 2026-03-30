@@ -139,7 +139,7 @@ class ABot_M0(baseframework):
 
             action_loss = self.action_model(last_hidden_repeated, actions_target_repeated, state_repeated, action_mask=action_mask_repeated)  # (B, chunk_len, action_dim)
 
-        return {"action_loss": action_loss}
+        return {"action_dit_loss": action_loss}
 
     @torch.inference_mode()
     def predict_action(

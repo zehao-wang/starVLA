@@ -91,8 +91,8 @@ def build_param_lr_groups(model, cfg):
         try:
             for attr in module_name.split("."):
                 module = getattr(module, attr)
-            # filter out frozen parameters
-            params = [p for p in module.parameters() if id(p) not in frozen_params]
+            # filter out frozen parameters (both explicit freeze_modules and requires_grad=False e.g. LoRA base weights)
+            params = [p for p in module.parameters() if id(p) not in frozen_params and p.requires_grad]
             if params:  # only add param group if there are trainable parameters
                 param_groups.append({"params": params, "lr": lr, "name": module_name})
                 used_params.update(id(p) for p in params)
@@ -100,7 +100,7 @@ def build_param_lr_groups(model, cfg):
             ReferenceError(f"⚠️ module path `{module_name}` not found in vla")
 
     # assign base learning rate to the remaining unused parameters (exclude frozen ones)
-    other_params = [p for p in model.parameters() if id(p) not in used_params and id(p) not in frozen_params]
+    other_params = [p for p in model.parameters() if id(p) not in used_params and id(p) not in frozen_params and p.requires_grad]
     if other_params:
         param_groups.append({"params": other_params, "lr": base_lr, "name": "base"})
 
@@ -190,6 +190,63 @@ class TrainerUtils:
         # accelerator.wait_for_everyone()  # synchronize when distributed training
         if dist.get_rank == 0:
             print(f"🔒 Frozen modules with re pattern: {frozen}")
+        return model
+
+    @staticmethod
+    def apply_lora_to_vlm(model, lora_cfg):
+        """
+        Apply PEFT LoRA adapters to the VLM backbone only.
+
+        The path to the HuggingFace model is specified by lora_cfg.vlm_module_path
+        (default: "qwen_vl_interface.model"). All other sub-modules (vision encoder,
+        action_model, etc.) are unaffected; their params remain frozen by PEFT.
+
+        Args:
+            model: top-level nn.Module (e.g. QwenFast)
+            lora_cfg: OmegaConf node with LoRA hyper-parameters:
+                - r (int): LoRA rank
+                - lora_alpha (int): LoRA scaling factor
+                - lora_dropout (float): dropout on LoRA layers
+                - target_modules (list[str]): projection names to apply LoRA
+                - vlm_module_path (str): dot-path to the HF model inside `model`
+
+        Returns:
+            model with PEFT LoRA applied to the VLM backbone
+        """
+        try:
+            from peft import LoraConfig, get_peft_model
+        except ImportError as e:
+            raise ImportError(
+                "peft is required for LoRA training. Install with: pip install peft"
+            ) from e
+
+        vlm_module_path = lora_cfg.get("vlm_module_path", "qwen_vl_interface.model")
+        attrs = vlm_module_path.split(".")
+
+        # Navigate to the parent and the target HF model
+        parent = model
+        for attr in attrs[:-1]:
+            parent = getattr(parent, attr)
+        vlm_model = getattr(parent, attrs[-1])
+
+        target_modules = list(lora_cfg.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]))
+
+        lora_config = LoraConfig(
+            r=int(lora_cfg.get("r", 16)),
+            lora_alpha=int(lora_cfg.get("lora_alpha", 32)),
+            target_modules=target_modules,
+            lora_dropout=float(lora_cfg.get("lora_dropout", 0.05)),
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+
+        peft_vlm = get_peft_model(vlm_model, lora_config)
+
+        if dist.get_rank() == 0:
+            print("📐 LoRA applied to VLM backbone:")
+            peft_vlm.print_trainable_parameters()
+
+        setattr(parent, attrs[-1], peft_vlm)
         return model
 
     @staticmethod

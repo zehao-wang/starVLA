@@ -60,6 +60,8 @@ class _QWen3_VL_Interface(nn.Module):
             attn_implementation=attn_implementation,
             dtype=torch.bfloat16,
         )
+        actual_attn = getattr(model.config, "_attn_implementation", attn_implementation)
+        logger.info(f">> Qwen3-VL loaded | attn_implementation: {actual_attn} | model: {model_id}")
         processor = AutoProcessor.from_pretrained(model_id)
         processor.tokenizer.padding_side = "left"
 

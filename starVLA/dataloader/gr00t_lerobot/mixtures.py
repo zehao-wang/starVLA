@@ -354,7 +354,9 @@ DATASET_NAMED_MIXTURES = {
         ("place_a2b_left", 1.0, "robotwin"),
         ("place_a2b_right", 1.0, "robotwin"),
     ],
-
+    "robotwin_debug": [
+        ("Randomized/adjust_bottle", 1.0, "robotwin")
+    ],
     "multi_robot": [
         ("LEROBOT_LIBERO_DATA/libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
         # ("OXE_LEROBOT_DATASET/bridge_orig_1.0.0_lerobot", 1.0, "oxe_bridge"),

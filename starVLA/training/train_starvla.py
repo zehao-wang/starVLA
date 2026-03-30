@@ -12,6 +12,7 @@ Conventions:
 
 # Standard Library
 import argparse
+import glob
 import json
 import os
 import re
@@ -121,6 +122,12 @@ class VLATrainer(TrainerUtils):
         self._init_checkpointing()
         self._adjust_lr_scheduler_for_resume()
 
+        lora_cfg = getattr(self.config.trainer, "lora", None)
+        if lora_cfg and getattr(lora_cfg, "enable", False):
+            self.model = self.apply_lora_to_vlm(self.model, lora_cfg)
+            # Rebuild optimizer after LoRA so it only contains trainable (requires_grad=True) params
+            self.optimizer, self.lr_scheduler = setup_optimizer_and_scheduler(self.model, self.config)
+
         freeze_modules = (
             self.config.trainer.freeze_modules
             if (self.config and hasattr(self.config.trainer, "freeze_modules"))
@@ -225,6 +232,17 @@ class VLATrainer(TrainerUtils):
                 f.write(json.dumps(summary_data) + "\n")
             self.accelerator.print(f"✅ Checkpoint saved at {checkpoint_path}")
 
+            # Keep only the 2 most recent checkpoints
+            keep_last_n = getattr(self.config.trainer, "keep_last_n_checkpoints", 2)
+            all_ckpts = sorted(
+                glob.glob(os.path.join(self.checkpoint_dir, "steps_*_pytorch_model.pt")) +
+                glob.glob(os.path.join(self.checkpoint_dir, "steps_*_model.safetensors")),
+                key=lambda p: int(re.search(r"steps_(\d+)_", p).group(1)),
+            )
+            for old_ckpt in all_ckpts[:-keep_last_n]:
+                os.remove(old_ckpt)
+                self.accelerator.print(f"🗑️  Removed old checkpoint: {old_ckpt}")
+
             if isinstance(self.config, AccessTrackedConfig):
                 logger.info("📊 Saving accessed configuration...")
                 output_dir = Path(self.config.output_dir)
@@ -312,6 +330,8 @@ class VLATrainer(TrainerUtils):
         if self.accelerator.is_main_process:
             normalized_actions = output_dict["normalized_actions"]
             actions = np.array(actions)
+            t = actions.shape[1]
+            normalized_actions = normalized_actions[:, :t, :]
             num_pots = np.prod(actions.shape)
             score = TrainerUtils.euclidean_distance(normalized_actions, actions)
             step_metrics["mse_score"] = score / num_pots
@@ -336,7 +356,11 @@ class VLATrainer(TrainerUtils):
 
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 output_dict = self.model.forward(batch_vla)
-                action_loss = output_dict["action_loss"]
+                action_loss_key = next(
+                    (k for k in output_dict if k.startswith("action_") and k.endswith("_loss")),
+                    "action_loss",
+                )
+                action_loss = output_dict[action_loss_key]
                 total_loss = action_loss
 
             self.accelerator.backward(total_loss)
@@ -348,7 +372,7 @@ class VLATrainer(TrainerUtils):
             self.lr_scheduler.step()
 
         return {
-            "action_dit_loss": action_loss.item(),
+            action_loss_key: action_loss.item(),
         }
 
     def _finalize_training(self):

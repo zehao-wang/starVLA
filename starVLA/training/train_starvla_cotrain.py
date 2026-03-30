@@ -325,7 +325,11 @@ class VLAMTrainer(TrainerUtils):
 
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 output_dict = self.model.forward(batch_vla)
-                action_loss = output_dict["action_loss"]
+                action_loss_key = next(
+                    (k for k in output_dict if k.startswith("action_") and k.endswith("_loss")),
+                    "action_loss",
+                )
+                action_loss = output_dict[action_loss_key]
                 total_loss = action_loss
             self.accelerator.backward(total_loss)
 
@@ -342,7 +346,7 @@ class VLAMTrainer(TrainerUtils):
 
             log_dict.update(
                 {
-                    "action_dit_loss": action_loss.item(),
+                    action_loss_key: action_loss.item(),
                     "vlm_loss": vlm_loss.item(),
                 }
             )

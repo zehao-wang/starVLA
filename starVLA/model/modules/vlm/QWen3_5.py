@@ -165,11 +165,12 @@ class _QWen3_5_VL_Interface(nn.Module):
                     # Mask out all tokens before the first action token.
                     seq[:first_action_index] = IGNORE_INDEX
                 else:
-                    # If no action token is found, mask the entire sequence.
-                    seq[:] = IGNORE_INDEX
-                    logger.warning(
-                        "No action token found in sequence; please check action-tokenized tokenizer in "
-                        "starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md"
+                    # If no action token is found, raise immediately — likely the model is missing action special tokens.
+                    raise RuntimeError(
+                        "No action token found in sequence. "
+                        "The VLM likely does not have action special tokens in its vocabulary. "
+                        "Run add_special_tokens_to_qwen.py to create the -Action model and update base_vlm. "
+                        "See starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md"
                     )
             
             labels[labels == self.processor.tokenizer.pad_token_id] = -100 ## mask out pad tokens as well

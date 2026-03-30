@@ -129,10 +129,14 @@ class Qwenvl_Fast(baseframework):
             )
         
         vlm_action_loss = qwenvl_outputs.loss
-        if vlm_action_loss is None or torch.isnan(vlm_action_loss): 
-            vlm_action_loss = torch.tensor(0.0, device=self.qwen_vl_interface.model.device)
+        if vlm_action_loss is None or torch.isnan(vlm_action_loss):
+            raise RuntimeError(
+                "action_loss is None or NaN. "
+                "Check that the model has action special tokens added and labels are not fully masked. "
+                "See starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md"
+            )
 
-        return {"action_loss": vlm_action_loss}
+        return {"action_ar_loss": vlm_action_loss}
 
     @torch.inference_mode()
     def predict_action(
@@ -166,10 +170,14 @@ class Qwenvl_Fast(baseframework):
         # Step 1: QWenVL input format
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
 
+        time_horizon = self.action_model.fast_tokenizer.time_horizon
+        action_dim = self.action_model.fast_tokenizer.action_dim
+        max_new_tokens = time_horizon * action_dim  # worst-case: 1 BPE token per DCT char
+
         with torch.autocast("cuda", dtype=torch.bfloat16):
             generated_ids = self.qwen_vl_interface.model.generate(
                 **qwen_inputs,
-                max_length=2048,
+                max_new_tokens=max_new_tokens,
             )
         # --- Extract and decoder vlm_action to continue actions ---
         # --- extrace token (index based on VLM) ---

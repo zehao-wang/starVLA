@@ -1372,11 +1372,15 @@ class LeRobotSingleDataset(Dataset):
 
     def _pack_sample(self, data: dict) -> dict:
         """Pack transformed modality data into training sample format."""
+        cfg_size = self.data_cfg.get("image_size", None) if self.data_cfg is not None else None
+        image_size = tuple(cfg_size) if cfg_size is not None else None
         prim_images = []
         wrist_views = []
         for video_key in self.modality_keys["video"]:
             image = data[video_key][0]
-            image = Image.fromarray(image).resize((224, 224))
+            image = Image.fromarray(image)
+            if image_size is not None:
+                image = image.resize(image_size)
             if "wrist" not in video_key:
                 prim_images.append(image)
             else:
