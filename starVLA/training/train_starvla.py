@@ -423,6 +423,7 @@ def main(cfg) -> None:
 
     logger.info("... and that's all, folks!")
     dist.barrier()
+    torch.cuda.empty_cache()
     dist.destroy_process_group()
 
 
