@@ -14,9 +14,9 @@ from transformers import BatchFeature
 from qwen_vl_utils import process_vision_info
 
 
-from accelerate.logging import get_logger
+import logging
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 IGNORE_INDEX = -100
 IMAGE_TOKEN_INDEX = 151655
