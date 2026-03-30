@@ -1,14 +1,26 @@
 # MY WANDB API KEY, DO NOT REMOVE
 # export WANDB_API_KEY="${WANDB_API_KEY:-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}"
 
-# export NCCL_SOCKET_IFNAME=bond0
-# export NCCL_IB_HCA=mlx5_2,mlx5_3
+# ---------------------------------------------------------------------------
+# MACHINE config  — select with: MACHINE=a100 bash run_robotwin_train.sh
+# ---------------------------------------------------------------------------
+machine=${MACHINE:-l40s}
 
-# L40S x 4
-export NCCL_SOCKET_IFNAME=enp39s0
-num_processes=4
-
-# A100(40G) x 8
+if [[ "$machine" == "l40s" ]]; then
+    # L40S x 4
+    export NCCL_SOCKET_IFNAME=enp39s0
+    num_processes=4
+    per_device_batch_size=1
+elif [[ "$machine" == "a100" ]]; then
+    # A100(40G) x 8
+    export NCCL_SOCKET_IFNAME=ens32
+    export NCCL_IB_HCA=ens65,ens129,ens161
+    num_processes=8
+    per_device_batch_size=2
+else
+    echo "Unknown MACHINE: $machine  (choices: l40s, a100)"
+    exit 1
+fi
 
 # used for check save when communication
 export NCCL_BLOCKING_WAIT=1
@@ -17,7 +29,7 @@ export NCCL_TIMEOUT=1000  # timeout set to 1 hour (unit: seconds)
 
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
-MODE=${MODE:-${1:-train}}   # usage: bash run_robotwin_train.sh [debug|train]  OR  MODE=debug bash ...
+MODE=${MODE:-train}   # usage: MODE=debug bash run_robotwin_train.sh
 
 Framework_name=QwenFast
 # vision encoder (visual), text embedding (embed_tokens), and action token
@@ -41,12 +53,12 @@ if [ "$MODE" = "debug" ]; then
 else
     data_mix=robotwin_all
     data_root=/shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot/lerobot_robotwin_mixed_c40r10_vc_train
-    per_device_batch_size=4
-    max_train_steps=150000
+    per_device_batch_size=${per_device_batch_size}
+    max_train_steps=100000
     num_warmup_steps=5000
     save_interval=10000
     logging_frequency=100
-    eval_interval=1000
+    eval_interval=5000
 fi
 
 run_id=0129_${data_mix}_qwen3fast_lora_c40r10
