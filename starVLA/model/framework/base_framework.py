@@ -97,22 +97,59 @@ class baseframework(PreTrainedModel):
             model_state_dict = load_file(str(pretrained_checkpoint))
         else:
             model_state_dict = torch.load(pretrained_checkpoint, map_location="cpu")
-        # logger.info(f"Loading model weights from `{pretrained_checkpoint}`")
-        model_keys = set(FrameworkModel.state_dict().keys())
-        checkpoint_keys = set(model_state_dict.keys())
-        try:
-            FrameworkModel.load_state_dict(model_state_dict, strict=True)
-        except RuntimeError as e:
-            # must keep all keys matched
-            common_keys = model_keys.intersection(checkpoint_keys)
-            missing_keys = model_keys - common_keys
-            unexpected_keys = checkpoint_keys - common_keys
-            if missing_keys:
-                logger.warning(f"Missing keys in state_dict: {missing_keys}")
-            if unexpected_keys:
-                logger.warning(f"Unexpected keys in state_dict: {unexpected_keys}")
+        # Detect PEFT/LoRA checkpoint (keys contain 'base_model.model.' inserted by PEFT)
+        is_lora_ckpt = any("base_model.model." in k for k in model_state_dict.keys())
+        if is_lora_ckpt:
+            lora_cfg = getattr(model_config.trainer, "lora", None)
+            if lora_cfg is None or not getattr(lora_cfg, "enable", False):
+                raise RuntimeError(
+                    "Checkpoint appears to be a PEFT/LoRA checkpoint (keys contain 'base_model.model.') "
+                    "but trainer.lora.enable is not set in config."
+                )
+            logger.info("[*] Detected LoRA checkpoint — applying PEFT, loading, then merging weights.")
+            from peft import LoraConfig, get_peft_model
 
-            raise e
+            vlm_module_path = lora_cfg.get("vlm_module_path", "qwen_vl_interface.model")
+            attrs = vlm_module_path.split(".")
+            parent = FrameworkModel
+            for attr in attrs[:-1]:
+                parent = getattr(parent, attr)
+            vlm_model = getattr(parent, attrs[-1])
+
+            lora_config = LoraConfig(
+                r=int(lora_cfg.get("r", 16)),
+                lora_alpha=int(lora_cfg.get("lora_alpha", 32)),
+                target_modules=list(lora_cfg.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"])),
+                lora_dropout=float(lora_cfg.get("lora_dropout", 0.05)),
+                bias="none",
+                task_type="CAUSAL_LM",
+            )
+            peft_vlm = get_peft_model(vlm_model, lora_config)
+            setattr(parent, attrs[-1], peft_vlm)
+
+            missing, unexpected = FrameworkModel.load_state_dict(model_state_dict, strict=False)
+            if unexpected:
+                logger.warning(f"[LoRA load] Unexpected keys: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+            if missing:
+                logger.warning(f"[LoRA load] Missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")
+
+            # Merge LoRA deltas into base weights and remove adapter overhead
+            merged_vlm = getattr(parent, attrs[-1]).merge_and_unload()
+            setattr(parent, attrs[-1], merged_vlm)
+            logger.info("[*] LoRA weights merged into base model.")
+        else:
+            try:
+                FrameworkModel.load_state_dict(model_state_dict, strict=True)
+            except RuntimeError as e:
+                model_keys = set(FrameworkModel.state_dict().keys())
+                checkpoint_keys = set(model_state_dict.keys())
+                missing_keys = model_keys - checkpoint_keys
+                unexpected_keys = checkpoint_keys - model_keys
+                if missing_keys:
+                    logger.warning(f"Missing keys in state_dict: {missing_keys}")
+                if unexpected_keys:
+                    logger.warning(f"Unexpected keys in state_dict: {unexpected_keys}")
+                raise e
 
         # **ensure model is on GPU**
         FrameworkModel = FrameworkModel
