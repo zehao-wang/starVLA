@@ -171,11 +171,12 @@ echo ""
 export PYTHONPATH=$ROBOTWIN_PATH:$STARVLA_PATH:$EVAL_FILES_PATH:${PYTHONPATH:-}
 export HF_LEROBOT_HOME
 export ROBOTWIN_PATH
-export CUROBO_TORCH_COMPILE=1
+
 
 GPU_IDS_CSV=$(IFS=,; echo "${GPU_IDS[*]}")
 
 conda run -n "$ROBOTWIN_CONDA_ENV" --no-capture-output \
+    env CUROBO_TORCH_COMPILE_DISABLE=1 \
     python "$EVAL_FILES_PATH/utils/eval_orchestrator.py" \
         --dataset-name  "$HF_DATASET_NAME" \
         --ports         "$PORTS" \

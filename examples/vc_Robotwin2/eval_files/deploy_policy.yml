@@ -36,4 +36,4 @@ normalization_mode: "min_max" # [both]  min_max | q99
 # fresh observations are used at each re-prediction boundary.
 # null → use full chunk (original behaviour, no extra inference cost)
 # Typical values: chunk_size // 2  (e.g. 8 for chunk_size=16)
-exec_horizon: 8
+exec_horizon: null
