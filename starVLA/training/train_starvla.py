@@ -63,21 +63,8 @@ def setup_directories(cfg) -> Path:
     if not dist.is_initialized() or dist.get_rank() == 0:
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(output_dir / "checkpoints", exist_ok=True)
-        _add_file_log_handler(output_dir)
 
     return output_dir
-
-
-def _add_file_log_handler(output_dir: Path) -> None:
-    """Attach a FileHandler to the root logger so all logger.* calls go to train.log."""
-    log_path = output_dir / "train.log"
-    handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-                          datefmt="%Y-%m-%d %H:%M:%S")
-    )
-    logging.root.addHandler(handler)
 
 
 def prepare_data(cfg, accelerator, output_dir) -> DataLoader:
@@ -145,6 +132,13 @@ class VLATrainer(TrainerUtils):
                 self.model = self.unfreeze_action_token_embeddings(self.model, lora_cfg)
             # Rebuild optimizer after LoRA so it only contains trainable (requires_grad=True) params
             self.optimizer, self.lr_scheduler = setup_optimizer_and_scheduler(self.model, self.config)
+            # Dump all parameter names + requires_grad to a file for inspection
+            if dist.get_rank() == 0:
+                param_log = Path(self.config.output_dir) / "lora_param_grad.log"
+                with open(param_log, "w", encoding="utf-8") as f:
+                    for name, param in self.model.named_parameters():
+                        f.write(f"{'TRAIN' if param.requires_grad else 'FROZEN'}  {name}\n")
+                print(f"[LoRA] Parameter grad status written to {param_log}")
 
         freeze_modules = (
             self.config.trainer.freeze_modules

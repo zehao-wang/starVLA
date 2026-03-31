@@ -6,8 +6,8 @@
 #   and cluster-specific NCCL_* vars before invoking this script.
 #
 # Usage (single-node):
-#   MACHINE=l40s bash run_robotwin_train_qwen35_pi.sh
-#   MODE=debug   bash run_robotwin_train_qwen35_pi.sh
+#   MACHINE=l40s bash run_robotwin_train_qwen35_pi_lora.sh
+#   MODE=debug   bash run_robotwin_train_qwen35_pi_lora.sh
 # ---------------------------------------------------------------------------
 
 set -e
@@ -23,7 +23,7 @@ if [[ "$machine" == "l40s" ]]; then
 elif [[ "$machine" == "a100" ]]; then
     export NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-ens32}
     export NCCL_IB_HCA=${NCCL_IB_HCA:-ens65,ens129,ens161}
-    per_device_batch_size=1
+    per_device_batch_size=8
 elif [[ "$machine" == "h200" ]]; then
     # p5en.48xlarge — EFA (no InfiniBand), 16x enp* NICs, 8x H200 143GB
     export NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-enp}
@@ -48,7 +48,7 @@ MODE=${MODE:-train}
 Framework_name=Qwen35PI
 freeze_module_list=''
 base_vlm=playground/Pretrained_models/Qwen3.5-2B
-config_yaml=./examples/vc_Robotwin2_qwen35/train_files/starvla_cotrain_robotwin_qwen35_pi.yaml
+config_yaml=./examples/vc_Robotwin2_qwen35/train_files/starvla_cotrain_robotwin_qwen35_pi_lora.yaml
 run_root_dir=./results/Checkpoints
 
 if [ "$MODE" = "debug" ]; then
@@ -71,7 +71,7 @@ else
     eval_interval=5000
 fi
 
-run_id=260331_${data_mix}_qwen35_pi_c40r10
+run_id=260331_${data_mix}_qwen35_pi_lora_c40r10
 
 echo "MODE: ${MODE} | data_mix: ${data_mix} | batch: ${per_device_batch_size} | steps: ${max_train_steps}"
 
