@@ -132,13 +132,6 @@ class VLATrainer(TrainerUtils):
                 self.model = self.unfreeze_action_token_embeddings(self.model, lora_cfg)
             # Rebuild optimizer after LoRA so it only contains trainable (requires_grad=True) params
             self.optimizer, self.lr_scheduler = setup_optimizer_and_scheduler(self.model, self.config)
-            # Dump all parameter names + requires_grad to a file for inspection
-            if dist.get_rank() == 0:
-                param_log = Path(self.config.output_dir) / "lora_param_grad.log"
-                with open(param_log, "w", encoding="utf-8") as f:
-                    for name, param in self.model.named_parameters():
-                        f.write(f"{'TRAIN' if param.requires_grad else 'FROZEN'}  {name}\n")
-                print(f"[LoRA] Parameter grad status written to {param_log}")
 
         freeze_modules = (
             self.config.trainer.freeze_modules
@@ -147,6 +140,14 @@ class VLATrainer(TrainerUtils):
         )
         self.model = self.freeze_backbones(self.model, freeze_modules=freeze_modules)
         self.print_trainable_parameters(self.model)
+
+        # Dump all parameter names + requires_grad to a file for inspection (all training modes)
+        if dist.get_rank() == 0:
+            param_log = Path(self.config.output_dir) / "trainable_params.log"
+            with open(param_log, "w", encoding="utf-8") as f:
+                for name, param in self.model.named_parameters():
+                    f.write(f"{'TRAIN' if param.requires_grad else 'FROZEN'}  {name}\n")
+            print(f"[Train] Parameter grad status written to {param_log}")
 
         self.model, self.optimizer, self.vla_train_dataloader = self.setup_distributed_training(
             self.accelerator,
