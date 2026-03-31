@@ -16,19 +16,46 @@ Overview:
 import torch.nn as nn
 from typing import List, Dict, Any, Callable, Optional
 import os
+import json
+import importlib.util
 import numpy as np
-from transformers import AutoProcessor
+from transformers import PreTrainedTokenizerFast
 
+
+def _load_fast_processor(fast_tokenizer_name: str):
+    """Load UniversalActionProcessor directly (transformers 5.x compatible).
+
+    AutoProcessor._load_tokenizer_from_pretrained changed in transformers 5.x and
+    no longer correctly initialises PreTrainedTokenizerFast when called through
+    AutoTokenizer.  We bypass it by loading the tokenizer file directly.
+    """
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_file=os.path.join(fast_tokenizer_name, "tokenizer.json"),
+        clean_up_tokenization_spaces=False,
+    )
+    spec = importlib.util.spec_from_file_location(
+        "processing_action_tokenizer",
+        os.path.join(fast_tokenizer_name, "processing_action_tokenizer.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    proc_cfg = json.load(open(os.path.join(fast_tokenizer_name, "processor_config.json")))
+    return mod.UniversalActionProcessor(
+        tokenizer,
+        scale=proc_cfg.get("scale", 10),
+        vocab_size=proc_cfg.get("vocab_size", 2048),
+        min_token=proc_cfg.get("min_token", 0),
+        action_dim=proc_cfg.get("action_dim", None),
+        time_horizon=proc_cfg.get("time_horizon", None),
+    )
 
 
 class Fast_Action_Tokenizer(nn.Module):
     """One MLP ResNet block with a residual connection."""
     def __init__(self, fast_tokenizer_name="playground/Pretrained_models/fast"):
         super().__init__()
-        
-        self.fast_tokenizer = AutoProcessor.from_pretrained(
-            fast_tokenizer_name, trust_remote_code=True
-        ) # load https://huggingface.co/physical-intelligence/fast
+
+        self.fast_tokenizer = _load_fast_processor(fast_tokenizer_name)
 
 
     def encoder_action2fastoken(self, raw_actions):
@@ -48,10 +75,7 @@ class Fast_Action_Tokenizer(nn.Module):
     def fit_tokenizer_on_datasets(self, action_dataset, datasets_path="<your_local_path>", ):
         # 如果 datasets_path 存在， 直接读取
         if os.path.exists(datasets_path):
-
-            self.fast_tokenizer = AutoProcessor.from_pretrained(
-            datasets_path, trust_remote_code=True
-        )
+            self.fast_tokenizer = _load_fast_processor(datasets_path)
             return
         else:
             # 如果不存在，Fit the tokenizer on the new dataset
