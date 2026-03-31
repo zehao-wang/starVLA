@@ -38,6 +38,7 @@ class ModelClient:
         port=5694,
         action_mode: str = "abs",
         normalization_mode: str = "min_max",
+        exec_horizon: Optional[int] = None,
     ) -> None:
 
         self.client = WebsocketClientPolicy(host, port)
@@ -77,6 +78,15 @@ class ModelClient:
         self.action_chunk_size = self.get_action_chunk_size(policy_ckpt_path=policy_ckpt_path)
         self.state_norm_stats = self.get_state_stats(self.unnorm_key, policy_ckpt_path=policy_ckpt_path)
         self.raw_actions = None
+
+        # Receding-horizon execution: re-predict every exec_horizon steps instead of
+        # every action_chunk_size steps.  Reduces action jitter at chunk boundaries.
+        # None → fall back to full chunk (original behaviour).
+        self.exec_horizon = exec_horizon if exec_horizon is not None else self.action_chunk_size
+        assert 1 <= self.exec_horizon <= self.action_chunk_size, (
+            f"exec_horizon ({self.exec_horizon}) must be in [1, action_chunk_size={self.action_chunk_size}]"
+        )
+        print(f"*** action_chunk_size={self.action_chunk_size}  exec_horizon={self.exec_horizon} ***")
 
     def reset(self, task_description: str) -> None:
         self.task_description = task_description
@@ -127,9 +137,7 @@ class ModelClient:
             "num_ddim_steps": self.num_ddim_steps,
         }
 
-        action_chunk_size = self.action_chunk_size
-
-        if step % action_chunk_size == 0 or self.raw_actions is None:
+        if step % self.exec_horizon == 0 or self.raw_actions is None:
             response = self.client.predict_action(vla_input)
             try:
                 normalized_actions = response["data"]["normalized_actions"]  # B, chunk, D
@@ -153,10 +161,7 @@ class ModelClient:
             else:
                 self.raw_actions = raw_actions
 
-        action_idx = step % action_chunk_size
-        if action_idx >= len(self.raw_actions):
-            pass
-
+        action_idx = step % self.exec_horizon
         current_action = self.raw_actions[action_idx]
 
         # Update prev_action for delta mode (for cross-chunk continuity)
@@ -350,6 +355,8 @@ def get_model(usr_args):
     if policy_ckpt_path is None:
         raise ValueError("policy_ckpt_path must be provided in config")
 
+    exec_horizon = usr_args.get("exec_horizon", None)
+
     return ModelClient(
         policy_ckpt_path=policy_ckpt_path,
         host=host,
@@ -357,6 +364,7 @@ def get_model(usr_args):
         unnorm_key=unnorm_key,
         action_mode=action_mode,
         normalization_mode=normalization_mode,
+        exec_horizon=exec_horizon,
     )
 
 

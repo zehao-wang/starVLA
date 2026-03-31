@@ -14,6 +14,7 @@ Conventions:
 import argparse
 import glob
 import json
+import logging
 import os
 import re
 import time
@@ -62,8 +63,21 @@ def setup_directories(cfg) -> Path:
     if not dist.is_initialized() or dist.get_rank() == 0:
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(output_dir / "checkpoints", exist_ok=True)
+        _add_file_log_handler(output_dir)
 
     return output_dir
+
+
+def _add_file_log_handler(output_dir: Path) -> None:
+    """Attach a FileHandler to the root logger so all logger.* calls go to train.log."""
+    log_path = output_dir / "train.log"
+    handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+                          datefmt="%Y-%m-%d %H:%M:%S")
+    )
+    logging.root.addHandler(handler)
 
 
 def prepare_data(cfg, accelerator, output_dir) -> DataLoader:
@@ -160,12 +174,15 @@ class VLATrainer(TrainerUtils):
     def _init_wandb(self):
         """Initialize Weights & Biases."""
         if self.accelerator.is_main_process:
+            is_resume = getattr(self.config.trainer, "is_resume", False)
             wandb.init(
                 name=self.config.run_id,
+                id=self.config.run_id,
                 dir=os.path.join(self.config.output_dir, "wandb"),
                 project=self.config.wandb_project,
                 entity=self.config.wandb_entity,
                 group="vla-train",
+                resume="allow" if is_resume else None,
             )
 
     def _init_checkpointing(self):
@@ -286,7 +303,9 @@ class VLATrainer(TrainerUtils):
         self._log_training_config()
         self._create_data_iterators()
         progress_bar = tqdm(
-            range(self.config.trainer.max_train_steps), disable=not self.accelerator.is_local_main_process
+            range(self.config.trainer.max_train_steps),
+            initial=self.completed_steps,
+            disable=not self.accelerator.is_local_main_process,
         )
 
         while self.completed_steps < self.config.trainer.max_train_steps:

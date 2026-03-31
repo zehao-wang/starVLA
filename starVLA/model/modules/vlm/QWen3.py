@@ -72,6 +72,13 @@ class _QWen3_VL_Interface(nn.Module):
         # alin qwen3 with qwen2.5
         self.model.config.hidden_size = self.model.config.text_config.hidden_size
 
+        # Gradient checkpointing: recompute activations during backward instead of storing them.
+        # Critical for QwenPI-style LoRA training where output_hidden_states=True causes autograd
+        # to retain all 36 layer activations for gradient flow back to LoRA params.
+        if qwenvl_config.get("gradient_checkpointing", False):
+            self.model.gradient_checkpointing_enable()
+            logger.info(">> Gradient checkpointing enabled for Qwen3-VL")
+
         # only for fast base model
         if "-Action" in model_id:
             self._ACTION_TOKEN_MIN = _ACTION_TOKEN_MIN

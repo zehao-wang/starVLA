@@ -1,14 +1,39 @@
-policy_name: starVLA
-task_name: null
-task_config: null
-ckpt_setting: null
-seed: null
-instruction_type: unseen
+# deploy_policy.yml — shared configuration for starVLA eval on RoboTwin2.
+#
+# Field annotations:
+#   [both]    read by both eval modes (random rollout & dataset-mode)
+#   [random]  read only by eval.sh → RoboTwin's eval_policy.py
+#   [dataset] read only by run_eval_distributed.sh / eval_client.py
+#   [unused]  present for RoboTwin config-format compatibility; has no effect in our setup
 
-# StarVLA Client Parameters
-host: "127.0.0.1"
-port: 5694
-policy_ckpt_path: "results/Checkpoints/0129_robotwin_debug_qwen3fast_lora_c40r10/final_model/pytorch_model.pt"
-unnorm_key: "new_embodiment"
-action_mode: "abs"
-normalization_mode: "min_max"  # options: min_max, q99
+# ---------------------------------------------------------------------------
+# RoboTwin eval_policy.py fields  (random rollout mode only)
+# ---------------------------------------------------------------------------
+policy_name: starVLA      # [unused]  eval.sh hardcodes "--policy_name model2robotwin_interface"
+task_name: null           # [random]  overridden by eval.sh CLI arg; ignored in dataset mode
+task_config: null         # [random]  overridden by eval.sh CLI arg; ignored in dataset mode (derived from dataset)
+ckpt_setting: null        # [random]  RoboTwin checkpoint alias, overridden by eval.sh CLI arg
+seed: null                # [random]  overridden by eval.sh CLI arg; dataset mode uses per-episode seeds from dataset
+instruction_type: unseen  # [random]  read by eval_policy.py for instruction sampling
+
+# ---------------------------------------------------------------------------
+# StarVLA model client  (model2robotwin_interface.py)
+# ---------------------------------------------------------------------------
+host: "127.0.0.1"  # [both]  policy server host
+port: 5694         # [both]  policy server port; distributed eval overrides this per-worker
+
+# ★ Primary field to change when switching checkpoints
+# Also read by run_eval_distributed.sh to launch the server process.
+policy_ckpt_path: "results/Checkpoints/0129_robotwin_all_qwen3fast_c40r10/final_model/pytorch_model.pt"
+
+unnorm_key: "new_embodiment"  # [both]  key into the checkpoint's normalization stats
+action_mode: "abs"            # [both]  abs | delta | rel
+normalization_mode: "min_max" # [both]  min_max | q99
+
+# Receding-horizon execution (action jitter reduction)
+# Re-predict every exec_horizon steps instead of every action_chunk_size steps.
+# Only the first exec_horizon actions of each predicted chunk are executed;
+# fresh observations are used at each re-prediction boundary.
+# null → use full chunk (original behaviour, no extra inference cost)
+# Typical values: chunk_size // 2  (e.g. 8 for chunk_size=16)
+exec_horizon: 8

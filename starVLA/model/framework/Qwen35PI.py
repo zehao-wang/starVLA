@@ -27,7 +27,7 @@ IGNORE_INDEX = -100
 
 from starVLA.model.framework.base_framework import baseframework
 from starVLA.model.modules.vlm import get_vlm_model
-from starVLA.model.modules.action_model.LayerwiseFM_ActionHeader import get_action_model, LayerwiseFlowmatchingActionHead
+from starVLA.model.modules.action_model.LayerwiseFM_ActionHeader_enhanced import get_action_model, LayerwiseFlowmatchingActionHead
 from starVLA.training.trainer_utils.trainer_tools import resize_images
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 
@@ -35,8 +35,8 @@ from starVLA.model.tools import FRAMEWORK_REGISTRY
 # ⚠️ Warning: This framework has been restructured and is NOT compatible with checkpoints created before 2025-10-20.
 ####################################################
 
-@FRAMEWORK_REGISTRY.register("QwenPI")
-class Qwen_PI(baseframework):
+@FRAMEWORK_REGISTRY.register("Qwen35PI")
+class Qwen35_PI(baseframework):
     """
     Multimodal vision-language-action model.
 
@@ -63,12 +63,22 @@ class Qwen_PI(baseframework):
 
         super().__init__()
         self.config = config
-        self.qwen_vl_interface = get_vlm_model(config=self.config)
+        self.qwen_vl_interface = get_vlm_model(config=self.config) # NOTE: base_vlm must contain Qwen3.5
 
-        # dynamic get llm config
-        num_vl_layers, llm_hidden_size = 36, self.qwen_vl_interface.model.config.hidden_size
-        self.config.framework.qwenvl.vl_hidden_dim = llm_hidden_size
-        self.config.framework.qwenvl.num_vl_layers = num_vl_layers
+        # verify llm config
+        num_vl_layers, llm_hidden_size, num_attention_heads, head_dim = \
+            self.qwen_vl_interface.model.config.text_config.num_hidden_layers, \
+            self.qwen_vl_interface.model.config.hidden_size, \
+            self.qwen_vl_interface.model.config.text_config.num_attention_heads, \
+            self.qwen_vl_interface.model.config.text_config.head_dim
+        
+        # NOTE: to confirm the the core model config understanding are correct.
+        assert self.config.framework.action_model.diffusion_model_cfg.num_layers == num_vl_layers
+        assert self.config.framework.qwenvl.vl_hidden_dim == llm_hidden_size
+
+        assert self.config.framework.action_model.diffusion_model_cfg.cross_attention_dim == llm_hidden_size
+        assert self.config.framework.action_model.diffusion_model_cfg.num_attention_heads == num_attention_heads
+        assert self.config.framework.action_model.diffusion_model_cfg.attention_head_dim == head_dim
 
         self.action_model: LayerwiseFlowmatchingActionHead = get_action_model(config=self.config)
 
@@ -76,7 +86,6 @@ class Qwen_PI(baseframework):
         self.past_action_window_size = config.framework.action_model.past_action_window_size
         self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
         
-
     def forward(
         self,
         examples: List[dict] = None,
@@ -94,11 +103,10 @@ class Qwen_PI(baseframework):
         """
         batch_images = [example["image"] for example in examples]  #  [B，[PLT]]
         instructions = [example["lang"] for example in examples]  # [B, str]
-        actions = [example["action"] for example in examples]  # label [B， len, 7]
-
+        actions = [example["action"] for example in examples]  # label [B， len, state_dim]
         state = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
 
-        # Step 1: QWenVL input format
+        # QWen35 forward pass
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
@@ -107,25 +115,30 @@ class Qwen_PI(baseframework):
                 output_hidden_states=True,
                 return_dict=True,
             )
-            # 取与 DiT 层数匹配的最后 N 层隐藏态，按层喂给 DiT
+            
+            # Get the hiddens of vlm layers and prepare for cross attention kv cache
             all_hidden = qwenvl_outputs.hidden_states
             expected_layers = len(self.action_model.model.transformer_blocks)
-            vl_embs_list = list(all_hidden[-expected_layers:])
+
+            assert expected_layers == len(all_hidden)-1
+            vl_embs_list = list(all_hidden[1:]) # NOTE: skip embedding layer
             base_hidden = vl_embs_list[-1]
 
-        # Step 4: Action Expert Forward and Loss
+        # Action expert forward and loss
         with torch.autocast("cuda", dtype=torch.float32):
             # 标签对齐：取最后 chunk_len 段
             actions = torch.tensor(
                 np.array(actions), device=base_hidden.device, dtype=base_hidden.dtype
-            )  # [B, T_full, action_dim]
-            actions_target = actions[:, -(self.future_action_window_size+1):, :]  # (B, chunk_len, action_dim)
+            )  
 
+            assert actions.shape[1] == self.future_action_window_size+1 # NOTE: check actions loaded are chunked correctly
+            actions_target = actions  # (B, chunk_len, action_dim)
+
+            # NOTE: to support multiple diffusion noise for same batch
             repeated_diffusion_steps = (
                 self.config.trainer.get("repeated_diffusion_steps", 1) if self.config and self.config.trainer else 1
             )
             actions_target_repeated = actions_target.repeat(repeated_diffusion_steps, 1, 1)
-            # 对每层特征做 repeat
             vl_embs_list_repeated = [h.repeat(repeated_diffusion_steps, 1, 1) for h in vl_embs_list]
             
             state_repeated = None
@@ -142,14 +155,12 @@ class Qwen_PI(baseframework):
         return {"action_dit_loss": action_loss}
 
     @torch.inference_mode()
-    def predict_action( # TODO align  predict_action with forward, make api more flexible
+    def predict_action( 
         self,
         examples: List[dict] = None,
         **kwargs: str,
     ) -> np.ndarray:
         """
-        推理：单次前向直接回归未来动作（无扩散采样）。
-
         Steps:
           1. Resize images to training resolution (if specified)
           2. Encode with QwenVL (hidden states retained)
@@ -171,7 +182,7 @@ class Qwen_PI(baseframework):
         if train_obs_image_size:
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
     
-        # Step 1: QWenVL input format
+        # QWen35 forward pass
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
@@ -182,11 +193,12 @@ class Qwen_PI(baseframework):
             )
             all_hidden = qwenvl_outputs.hidden_states
             expected_layers = len(self.action_model.model.transformer_blocks)
-            vl_embs_list = list(all_hidden[-expected_layers:])
+            assert expected_layers == len(all_hidden)-1
+            vl_embs_list = list(all_hidden[1:]) # NOTE: skip embedding layer
             base_hidden = vl_embs_list[-1]
 
         state = torch.from_numpy(np.array(state)).to(base_hidden.device, dtype=base_hidden.dtype) if state is not None else None
-        # Step 4: Action Expert Forward and Loss
+        # Action expert forward and loss
         with torch.autocast("cuda", dtype=torch.float32):
             pred_actions = self.action_model.predict_action(vl_embs_list, state)  # (B, chunk_len, action_dim)
 
@@ -197,42 +209,37 @@ class Qwen_PI(baseframework):
 
 if __name__ == "__main__":
     from omegaconf import OmegaConf
-    # import debugpy
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config_yaml", type=str, default="./starVLA/config/training/starvla_cotrain_oxe.yaml", help="Path to YAML config")
+    parser.add_argument("--config_yaml", type=str, required=True, help="Path to YAML config")
     args, clipargs = parser.parse_known_args()
 
-    # debugpy.listen(("0.0.0.0", 10092))
-    # print("🔍 Rank 0 waiting for debugger attach on port 10092...")
-    # debugpy.wait_for_client()
-
     cfg = OmegaConf.load(args.config_yaml)
-    # try get model
-    cfg.framework.qwenvl.base_vlm = "./playground/Pretrained_models/Qwen3-VL-4B-Instruct"
+    print("Base VLM Mode:", cfg.framework.qwenvl.base_vlm) 
     
 
-    model = Qwen_PI(cfg)
+    model = Qwen35_PI(cfg)
     # ckpt="/mnt/petrelfs/yejinhui/Projects/llavavla/results/Checkpoints/1011_qwenpi/checkpoints/need_steps_10000_pytorch_model.pt"
-    # model = Qwen_PI.from_pretrained(ckpt)
+    # model = Qwen35_PI.from_pretrained(ckpt)
     print(model)
 
+    print('-' * 50)
 
     # fake sample 
     image = Image.fromarray(np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8))
     # Create a sample
     sample = {
-        "action": np.random.uniform(-1, 1, size=(16, 7)).astype(np.float16), # action_chunk, action_dim
+        "action": np.random.uniform(-1, 1, size=(16, 14)).astype(np.float16), # action_chunk, action_dim
         "image": [image, image], # two views
         "lang": "This is a fake instruction for testing.",
-        "state" : np.random.uniform(-1, 1, size=(1, 7)).astype(np.float16), # chunk, state_dim
+        "state" : np.random.uniform(-1, 1, size=(1, 14)).astype(np.float16), # chunk, state_dim
     }
 
     batch  = [sample, sample]  # batch size 2
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     forward_output = model(batch)
-    action_loss = forward_output['action_loss']
+    action_loss = forward_output['action_dit_loss']
     print(f"Action Loss: {action_loss.item()}")
 
     # test predict action
