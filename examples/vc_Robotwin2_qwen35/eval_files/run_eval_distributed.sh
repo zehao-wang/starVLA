@@ -6,7 +6,7 @@
 #
 # Usage (from packages/starVLA/, starVLA env active):
 #
-#   bash examples/vc_Robotwin2/eval_files/run_eval_distributed.sh \
+#   bash examples/vc_Robotwin2_qwen35/eval_files/run_eval_distributed.sh \
 #       <hf_dataset_name>     e.g. lerobot_robotwin_rand20k_debug
 #       [exp_name]            default: starvla_dist_eval
 #       [max_episodes]        default: none  (all episodes per task)

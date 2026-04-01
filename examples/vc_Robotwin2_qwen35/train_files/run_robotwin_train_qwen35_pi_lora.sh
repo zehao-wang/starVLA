@@ -115,6 +115,10 @@ fi
 # ---------------------------------------------------------------------------
 # Launch
 # ---------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${SCRIPT_DIR}/WANDB_API_KEY" ]]; then
+    export WANDB_API_KEY=$(cat "${SCRIPT_DIR}/WANDB_API_KEY")
+fi
 # Point triton autotune cache to a job-scoped tmp dir.
 # Empty string causes DeepSpeed to set file_path=None → TypeError; must be a valid path.
 # The atexit write-race between GPU processes is harmless noise.
