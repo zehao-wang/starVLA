@@ -69,6 +69,7 @@ datasets:
     obs: ["image_0"]
     image_size: [224,224]
     video_backend: pyav
+    include_state: false # NOTE: need to give true if want to use state as input
 
 trainer:
   epochs: 100         # [UNUSED by train_starvla.py] trainer uses max_train_steps

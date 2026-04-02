@@ -41,7 +41,7 @@ class Qwen35_PI(baseframework):
     Multimodal vision-language-action model.
 
     Components:
-      - Qwen2.5 VL interface for fused language/vision token embeddings
+      - Qwen3.5 interface for fused language/vision token embeddings
       - Layer-wise cross DiT diffusion head 
       
 
