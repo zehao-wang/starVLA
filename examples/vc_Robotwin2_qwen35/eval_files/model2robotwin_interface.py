@@ -9,7 +9,6 @@ from collections import deque
 
 import numpy as np
 import cv2 as cv
-import json_numpy
 
 
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
@@ -30,7 +29,7 @@ class ModelClient:
         horizon: int = 0,
         action_ensemble=False,
         action_ensemble_horizon: Optional[int] = 3,
-        image_size: list[int] = [224, 224],
+        # image_size: list[int] = [224, 224],
         use_ddim: bool = True,
         num_ddim_steps: int = 10,
         adaptive_ensemble_alpha=0.1,
@@ -51,7 +50,7 @@ class ModelClient:
         )
         self.use_ddim = use_ddim
         self.num_ddim_steps = num_ddim_steps
-        self.image_size = image_size
+        # self.image_size = image_size
         self.horizon = horizon
         self.action_ensemble = action_ensemble and (AdaptiveEnsembler is not None)
         self.adaptive_ensemble_alpha = adaptive_ensemble_alpha
@@ -62,7 +61,6 @@ class ModelClient:
         self.action_mode = action_mode
         # State tracking for delta/rel modes
         self.initial_state = None  # s_0 for rel mode
-        self.prev_action = None  # last absolute action for delta mode
 
         self.task_description = None
         self.image_history = deque(maxlen=self.horizon)
@@ -97,7 +95,6 @@ class ModelClient:
         self.raw_actions = None
         # Reset state tracking for delta/rel modes
         self.initial_state = None
-        self.prev_action = None
 
     def step(
         self,
@@ -110,8 +107,8 @@ class ModelClient:
         #     state = state[[0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 6, 13]]
         #     example["state"] = state.reshape(1, -1)
 
-        # Store initial state for delta/rel modes
-        if self.action_mode in ["delta", "rel"] and self.initial_state is None:
+        # Store initial state for rel mode (rel uses s_0 as anchor throughout episode)
+        if self.action_mode == "rel" and self.initial_state is None:
             if state is None:
                 raise ValueError(f"action_mode='{self.action_mode}' requires state to be provided in example")
             self.initial_state = np.array(state).copy()
@@ -122,11 +119,13 @@ class ModelClient:
         if example is not None:
             if task_description != self.task_description:
                 self.reset(task_description)
-                # Re-store initial state after reset if in delta/rel mode
-                if self.action_mode in ["delta", "rel"] and state is not None:
+                # Re-store initial state after reset if in rel mode
+                if self.action_mode == "rel" and state is not None:
                     self.initial_state = np.array(state).copy()
 
-        images = [self._resize_image(image) for image in images]
+        # NOTE: removed by zehao, duplicated resize (another in predict_action), ambiguous dual config
+        # images = [self._resize_image(image) for image in images]
+
         example["image"] = images
         example_copy = example.copy()
         example_copy.pop("state")
@@ -163,10 +162,6 @@ class ModelClient:
 
         action_idx = step % self.exec_horizon
         current_action = self.raw_actions[action_idx]
-
-        # Update prev_action for delta mode (for cross-chunk continuity)
-        if self.action_mode == "delta":
-            self.prev_action = current_action.copy()
 
         current_action = current_action[[0, 1, 2, 3, 4, 5, 12, 6, 7, 8, 9, 10, 11, 13]]
         return current_action
@@ -222,18 +217,25 @@ class ModelClient:
         """
         Convert delta actions to absolute actions.
 
-        Training: delta[0] = a[0] - s[0], delta[t] = a[t] - a[t-1]
-        Deployment: a[0] = delta[0] + base, a[t] = delta[t] + a[t-1]
+        Training convention (datasets.py):
+          delta[0] = a[0] - s[current_t]   (relative to current observed state)
+          delta[t] = a[t] - a[t-1]         (relative to previous GT action, t > 0)
 
-        Where base is:
-        - First chunk: initial_state (s_0)
-        - Subsequent chunks: prev_action (last action from previous chunk)
+        Deployment: for each new chunk, use the current observed state as the anchor
+        for delta[0], then accumulate within the chunk using predicted actions.
+
+        Note: current_state is in robot format [left_6, left_gripper, right_6, right_gripper].
+        Model statistics are in reordered format [left_6, right_6, left_gripper, right_gripper]
+        (gripper-last). We must reorder before using as delta base.
         """
         abs_actions = np.zeros_like(delta_actions)
         mask = self.action_norm_stats.get("mask", np.ones(delta_actions.shape[-1], dtype=bool))
 
-        # Determine base action
-        base = self.prev_action if self.prev_action is not None else self.initial_state
+        # Reorder state from robot format to model format (inverse of eval output reordering)
+        # model_to_robot = [0,1,2,3,4,5,12,6,7,8,9,10,11,13]
+        # robot_to_model = [0,1,2,3,4,5,7,8,9,10,11,12,6,13]
+        robot_to_model = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 6, 13]
+        base = np.array(current_state)[robot_to_model].copy()
 
         for i in range(len(delta_actions)):
             abs_actions[i] = np.where(mask, delta_actions[i] + base, delta_actions[i])
@@ -273,12 +275,8 @@ class ModelClient:
             mode_stats = stats[action_mode]
             return mode_stats.get("action", mode_stats)
         if "action" in stats:
-            # Old format: only supports abs mode
-            if action_mode != "abs":
-                raise ValueError(
-                    f"Statistics key `{unnorm_key}` only provides `abs` action stats, "
-                    f"but action_mode=`{action_mode}` was requested."
-                )
+            # Old format: stats were computed in whatever action_mode was used during training
+            # and stored under the "action" key regardless of mode.
             return stats["action"]
         raise ValueError(
             f"Invalid statistics file format for key `{unnorm_key}`. "
@@ -297,9 +295,9 @@ class ModelClient:
         model_config, _ = read_mode_config(policy_ckpt_path)
         return model_config["framework"]["action_model"]["future_action_window_size"] + 1
 
-    def _resize_image(self, image: np.ndarray) -> np.ndarray:
-        image = cv.resize(image, tuple(self.image_size), interpolation=cv.INTER_AREA)
-        return image
+    # def _resize_image(self, image: np.ndarray) -> np.ndarray:
+    #     image = cv.resize(image, tuple(self.image_size), interpolation=cv.INTER_AREA)
+    #     return image
 
     @staticmethod
     def _check_unnorm_key(norm_stats, unnorm_key):
