@@ -60,6 +60,7 @@ datasets:
     dataset_py: lerobot_datasets
     data_root_dir: /shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot/lerobot_robotwin_rand20k_debug
     data_mix: robotwin_debug
+    normalization_mode: min_max   # options: min_max | q99
     action_type: abs_qpos
     action_mode: abs
     sequential_step_sampling: False

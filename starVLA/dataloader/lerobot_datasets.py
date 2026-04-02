@@ -36,7 +36,10 @@ def make_LeRobotSingleDataset(
     
     data_config = ROBOT_TYPE_CONFIG_MAP[robot_type]
     modality_config = data_config.modality_config()
-    transforms = data_config.transform()
+    if robot_type in {"robotwin", "robotwin50"}:
+        transforms = data_config.transform(data_cfg=data_cfg)
+    else:
+        transforms = data_config.transform()
     dataset_path = data_root_dir / data_name
     if robot_type not in ROBOT_TYPE_TO_EMBODIMENT_TAG:
         print(f"Warning: Robot type {robot_type} not found in ROBOT_TYPE_TO_EMBODIMENT_TAG, using {EmbodimentTag.NEW_EMBODIMENT} as default")
