@@ -1,0 +1,112 @@
+run_id: qwen35fast
+run_root_dir: results/Checkpoints
+seed: 42
+trackers: [jsonl, wandb]   # [UNUSED by train_starvla.py] wandb is initialised directly via wandb.init()
+wandb_entity: your_wandb_entity
+wandb_project: llavavla
+is_debug: false
+
+framework:
+  name: Qwen35Fast
+  qwenvl:
+    base_vlm: ./playground/Pretrained_models/Qwen3.5-2B-Action
+    attn_implementation: flash_attention_2
+    vl_hidden_dim: 2048   # dynamically overwritten by Qwen35Fast.__init__ from model.config.hidden_size
+
+  action_model:
+    future_action_window_size: 15
+    past_action_window_size: 0
+    action_dim: 14 
+
+  # action_model:
+  #   action_model_type: DiT-B
+  #   add_pos_embed: True
+  #   max_seq_len: 1024
+  #   action_dim: 14          # robot action dimensionality (abs_qpos for RoboTwin2)
+  #   state_dim: 14
+  #   future_action_window_size: 15   # chunk_len = past + 1 + future = 16
+  #   action_horizon: 16              # documentation alias for chunk_len
+  #   past_action_window_size: 0
+  #   repeated_diffusion_steps: 2
+  #   noise_beta_alpha: 1.5
+  #   noise_beta_beta: 1.0
+  #   noise_s: 0.999
+  #   num_timestep_buckets: 1000
+  #   num_target_vision_tokens: 2    # [UNUSED by LayerwiseFM for loss calculation] keep this small
+  #   num_inference_timesteps: 4      # flow-matching denoising steps at inference
+  #   diffusion_model_cfg:            # LayerwiseFM DiT Transformer parameters
+  #     cross_attention_dim: 2048     # must match vl_hidden_dim
+  #     dropout: 0.2
+  #     final_dropout: true
+  #     interleave_self_attention: true
+  #     norm_type: "ada_norm"
+  #     num_layers: 24                # must match number of layers of VLM
+  #     output_dim: 14                # must match action_dim
+  #     positional_embeddings: null
+  #     num_attention_heads: 8        # must match vlm num_attention_heads
+  #     attention_head_dim: 256       # must match vlm attention_head_dim
+
+datasets:
+  vlm_data:
+    # [UNUSED by train_starvla.py] kept for co-training scripts
+    dataset_py: vlm_datasets
+    dataformat: llava_json
+    dataset_use: asv2_conversation_en,asv2_detailed_description_en,asv2_region_captioning_en,coco_internvl_longcap_en,coco_karpathy_train_567_en,coco_negative_gpt4o_en,coco_poetry_zh,coco_rem_en_zh,cocorem_exist_yorn_en,cocotextv2_en,cocotextv2_gpt4o_en,okvqa_en,refcoco_grounding_aug_en,refcoco_grounding_en,tallyqa_coco_en,toloka_grounding_aug_en,vqav2_en,vsr_en
+    eval_dataset: aokvqa_cauldron_llava_format
+    data_flatten: false
+    base_interval: 2
+    max_pixels: 50176
+    min_pixels: 784
+    model_max_length: 2048
+    model_type: qwen2.5vl
+    per_device_batch_size: 4
+
+  vla_data:
+    dataset_py: lerobot_datasets
+    data_root_dir: /shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot/lerobot_robotwin_rand20k_debug
+    data_mix: robotwin_debug
+    normalization_mode: min_max   # options: min_max | q99
+    action_type: abs_qpos
+    action_mode: abs
+    sequential_step_sampling: False
+    per_device_batch_size: 4
+    load_all_data_for_training: true
+    include_state: true
+    image_size: [224,224]
+    video_backend: pyav
+
+trainer:
+  epochs: 100         # [UNUSED by train_starvla.py] trainer uses max_train_steps
+  max_train_steps: 1000000
+  num_warmup_steps: 5000
+  save_interval: 5000
+  eval_interval: 100
+  learning_rate:
+    base: 1e-05
+    qwen_vl_interface: 1e-05
+    action_model: 1e-04     # LayerwiseFM has trainable nn.Parameters; separate LR from VLM
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 5.0e-07
+  freeze_modules: ''
+  loss_scale:
+    vla: 1.0           # [UNUSED by train_starvla.py] only used in co-training scripts
+    vlm: 0.1           # [UNUSED by train_starvla.py] only used in co-training scripts
+  repeated_diffusion_steps: 2
+  max_grad_norm: 1.0             # [UNUSED] trainer reads gradient_clipping instead
+  warmup_ratio: 0.1             # [UNUSED by train_starvla.py] scheduler uses num_warmup_steps directly
+  weight_decay: 0.0             # [UNUSED] shadowed by optimizer.weight_decay below
+  logging_frequency: 10
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 1
+
+  optimizer:
+    name: AdamW
+    betas: [0.9, 0.95]
+    eps: 1.0e-08
+    weight_decay: 1.0e-08
+
+  is_resume: false
+  resume_epoch: null             # [UNUSED] trainer auto-detects step from checkpoint filename
+  resume_step: null              # [UNUSED] trainer auto-detects step from checkpoint filename
+  enable_mixed_precision_training: true  # [UNUSED] mixed precision controlled by DeepSpeed/accelerate config

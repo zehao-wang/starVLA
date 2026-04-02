@@ -28,8 +28,8 @@ VIDEO_TOKEN_INDEX = 248057
 DEFAULT_IMAGE_TOKEN = "<image>"
 DEFAULT_VIDEO_TOKEN = "<video>"
 
-_ACTION_TOKEN_MIN = 248077 # how can we know this range? check how you add fast tokens into VLM
-_ACTION_TOKEN_MAX = 248077 + 2047 # here only for fast_tokenizer, see starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md
+_ACTION_TOKEN_MIN = 248320 # start idx from add_special_tokens_to_qwen35.py output
+_ACTION_TOKEN_MAX = 248320 + 2047 # 2048 action tokens total
 
 
 import torch.nn as nn
