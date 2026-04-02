@@ -63,7 +63,7 @@ LE_ROBOT_INFO_FILENAME = "meta/info.json"
 LE_ROBOT_STATS_FILENAME = "meta/stats_gr00t.json"
 LE_ROBOT_DATA_FILENAME = "data/*/*.parquet"
 LE_ROBOT_STEPS_FILENAME = "meta/steps.pkl"
-LE_ROBOT_STATS_FORMAT_VERSION = 2
+LE_ROBOT_STATS_FORMAT_VERSION = 3  # bumped: delta/rel stats now respect episode boundaries
 EPSILON = 5e-4
 
 #  LeRobot v3.0 dataset file names 
@@ -176,6 +176,11 @@ def _build_stats_cache_config(
     }
 
 
+def _get_stats_cache_path(dataset_path: Path, cache_config: dict) -> Path:
+    mode = str(cache_config.get("mode", "abs")).lower()
+    return dataset_path / "meta" / f"stats_gr00t_{mode}.json"
+
+
 def _invalidate_legacy_stats_cache(stats_path: Path, reason: str) -> None:
     if not stats_path.exists():
         return
@@ -214,8 +219,6 @@ def _load_stats_cache(
         return None
 
     if cache_config != expected_config:
-        if invalidate_legacy:
-            _invalidate_legacy_stats_cache(stats_path, "statistics config mismatch, rebuilding cache")
         return None
 
     return statistics
@@ -369,6 +372,19 @@ def _get_action_col_slices(
     return action_col_slices
 
 
+def _get_episode_row_groups(data: pd.DataFrame, episode_col: str = "episode_index") -> list[np.ndarray]:
+    """Return positional row-index arrays (one per episode) for a parquet DataFrame.
+
+    Ensures that delta/rel statistics are computed within episode boundaries,
+    preventing cross-episode transitions from inflating min/max values.
+    Falls back to a single group covering the whole file when no episode column exists.
+    """
+    if episode_col not in data.columns:
+        return [np.arange(len(data))]
+    reset = data.reset_index(drop=True)
+    return [grp.index.to_numpy() for _, grp in reset.groupby(episode_col, sort=False)]
+
+
 def calculate_delta_action_statistics(
     parquet_paths: list[Path],
     lerobot_modality_meta: "LeRobotModalityMetadata",
@@ -421,7 +437,9 @@ def calculate_delta_action_statistics(
     accum: dict[str, list[np.ndarray]] = {col: [] for col in action_col_slices.keys()}
     for parquet_path in tqdm(sorted(list(parquet_paths)), desc="Collecting delta action stats"):
         data = pd.read_parquet(parquet_path)
-        trajectory_length = len(data)
+        # Split into per-episode groups so cross-episode transitions are never included
+        # in the delta computation (they would produce artificially large values).
+        episode_groups = _get_episode_row_groups(data)
         for action_col, slice_list in action_col_slices.items():
             if action_col not in data.columns:
                 raise ValueError(f"{action_col} not found in parquet columns.")
@@ -434,23 +452,30 @@ def calculate_delta_action_statistics(
                 state_matrix = np.stack(data[state_col])
                 state_part_full = state_matrix[:, s_slice[0] : s_slice[1]]
                 prepared_slices.append((a_slice, state_part_full, state_padding))
-            for base_index in range(trajectory_length):
-                action_steps = np.array(action_indices) + base_index
-                action_chunk_full = _get_chunk(action_matrix, action_steps, action_padding_ref)
+            for ep_indices in episode_groups:
+                ep_action_matrix = action_matrix[ep_indices]
+                ep_len = len(ep_indices)
+                ep_prepared = [
+                    (a_sl, sp[ep_indices], s_pad)
+                    for a_sl, sp, s_pad in prepared_slices
+                ]
+                for base_index in range(ep_len):
+                    action_steps = np.array(action_indices) + base_index
+                    action_chunk_full = _get_chunk(ep_action_matrix, action_steps, action_padding_ref)
 
-                for a_slice, state_part_full, state_padding in prepared_slices:
-                    action_part_chunk = action_chunk_full[:, a_slice[0] : a_slice[1]]
-                    state_chunk = _get_chunk(state_part_full, np.array(state_indices) + base_index, state_padding)
-                    if action_part_chunk.shape[1] != state_chunk.shape[1]:
-                        raise ValueError(f"Action/state dim mismatch for {action_col}:{a_slice}")
+                    for a_slice, ep_state_part, state_padding in ep_prepared:
+                        action_part_chunk = action_chunk_full[:, a_slice[0] : a_slice[1]]
+                        state_chunk = _get_chunk(ep_state_part, np.array(state_indices) + base_index, state_padding)
+                        if action_part_chunk.shape[1] != state_chunk.shape[1]:
+                            raise ValueError(f"Action/state dim mismatch for {action_col}:{a_slice}")
 
-                    out = action_part_chunk.copy()
-                    if len(out) > 1:
-                        out[1:] = action_part_chunk[1:] - action_part_chunk[:-1]
-                    out[0] = action_part_chunk[0] - state_chunk[0]
-                    action_chunk_full[:, a_slice[0] : a_slice[1]] = out
+                        out = action_part_chunk.copy()
+                        if len(out) > 1:
+                            out[1:] = action_part_chunk[1:] - action_part_chunk[:-1]
+                        out[0] = action_part_chunk[0] - state_chunk[0]
+                        action_chunk_full[:, a_slice[0] : a_slice[1]] = out
 
-                accum[action_col].append(action_chunk_full)
+                    accum[action_col].append(action_chunk_full)
 
     delta_stats = copy.deepcopy(base_stats)
     for action_col, series_list in accum.items():
@@ -519,7 +544,9 @@ def calculate_rel_action_statistics(
     accum: dict[str, list[np.ndarray]] = {col: [] for col in action_col_slices.keys()}
     for parquet_path in tqdm(sorted(list(parquet_paths)), desc="Collecting rel action stats"):
         data = pd.read_parquet(parquet_path)
-        trajectory_length = len(data)
+        # Split into per-episode groups so cross-episode transitions are never
+        # used as the reference state (they would produce artificially large values).
+        episode_groups = _get_episode_row_groups(data)
         for action_col, slice_list in action_col_slices.items():
             if action_col not in data.columns:
                 raise ValueError(f"{action_col} not found in parquet columns.")
@@ -532,20 +559,27 @@ def calculate_rel_action_statistics(
                 state_matrix = np.stack(data[state_col])
                 state_part_full = state_matrix[:, s_slice[0] : s_slice[1]]
                 prepared_slices.append((a_slice, state_part_full, state_padding))
-            for base_index in range(trajectory_length):
-                action_steps = np.array(action_indices) + base_index
-                action_chunk_full = _get_chunk(action_matrix, action_steps, action_padding_ref)
+            for ep_indices in episode_groups:
+                ep_action_matrix = action_matrix[ep_indices]
+                ep_len = len(ep_indices)
+                ep_prepared = [
+                    (a_sl, sp[ep_indices], s_pad)
+                    for a_sl, sp, s_pad in prepared_slices
+                ]
+                for base_index in range(ep_len):
+                    action_steps = np.array(action_indices) + base_index
+                    action_chunk_full = _get_chunk(ep_action_matrix, action_steps, action_padding_ref)
 
-                for a_slice, state_part_full, state_padding in prepared_slices:
-                    action_part_chunk = action_chunk_full[:, a_slice[0] : a_slice[1]]
-                    state_chunk = _get_chunk(state_part_full, np.array(state_indices) + base_index, state_padding)
-                    if action_part_chunk.shape[1] != state_chunk.shape[1]:
-                        raise ValueError(f"Action/state dim mismatch for {action_col}:{a_slice}")
+                    for a_slice, ep_state_part, state_padding in ep_prepared:
+                        action_part_chunk = action_chunk_full[:, a_slice[0] : a_slice[1]]
+                        state_chunk = _get_chunk(ep_state_part, np.array(state_indices) + base_index, state_padding)
+                        if action_part_chunk.shape[1] != state_chunk.shape[1]:
+                            raise ValueError(f"Action/state dim mismatch for {action_col}:{a_slice}")
 
-                    out = action_part_chunk - state_chunk[0]
-                    action_chunk_full[:, a_slice[0] : a_slice[1]] = out
+                        out = action_part_chunk - state_chunk[0]
+                        action_chunk_full[:, a_slice[0] : a_slice[1]] = out
 
-                accum[action_col].append(action_chunk_full)
+                    accum[action_col].append(action_chunk_full)
 
     rel_stats = copy.deepcopy(base_stats)
     for action_col, series_list in accum.items():
@@ -825,7 +859,6 @@ class LeRobotSingleDataset(Dataset):
         
         action_mode = _normalize_action_mode(self.data_cfg.get("action_mode", "abs") if self.data_cfg else "abs")
 
-        stats_path = self.dataset_path / LE_ROBOT_STATS_FILENAME
         action_cfg = self.modality_configs.get("action")
         state_cfg = self.modality_configs.get("state")
         action_keys_full = list(action_cfg.modality_keys) if action_cfg else []
@@ -843,6 +876,7 @@ class LeRobotSingleDataset(Dataset):
         stats_cache_config = _build_stats_cache_config(
             action_mode=action_mode,
         )
+        stats_path = _get_stats_cache_path(self.dataset_path, stats_cache_config)
         parquet_files = list(self.dataset_path.glob(LE_ROBOT_DATA_FILENAME))
         parquet_files_filtered = [
             pf for pf in parquet_files if "episode_033675.parquet" not in pf.name

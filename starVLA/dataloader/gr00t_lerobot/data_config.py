@@ -33,6 +33,23 @@ class BaseDataConfig(ABC):
         pass
 
 
+def _get_robotwin_joint_normalization_mode(data_cfg: dict | None) -> str:
+    """Resolve normalization mode for Robotwin joints from YAML config.
+
+    Supported values: min_max, q99.
+    Default is min_max when not provided.
+    """
+    mode = "min_max"
+    if data_cfg is not None:
+        mode = data_cfg.get("normalization_mode", mode)
+    if mode not in {"min_max", "q99"}:
+        raise ValueError(
+            f"Invalid datasets.vla_data.normalization_mode: {mode}. "
+            "Expected one of ['min_max', 'q99']."
+        )
+    return mode
+
+
 ###########################################################################################
 
 class OxeDroidDataConfig:
@@ -802,8 +819,8 @@ class ArxX5DataConfig:
             StateActionTransform(
                 apply_to=self.state_keys,
                 normalization_modes={
-                    "state.left_joints": "min_max",
-                    "state.right_joints": "min_max",
+                    "state.left_joints": "q99",
+                    "state.right_joints": "q99",
                     "state.left_gripper": "binary",
                     "state.right_gripper": "binary",
                 },
@@ -813,8 +830,8 @@ class ArxX5DataConfig:
             StateActionTransform(
                 apply_to=self.action_keys,
                 normalization_modes={
-                    "action.left_joints": "min_max",
-                    "action.right_joints": "min_max",
+                    "action.left_joints": "q99",
+                    "action.right_joints": "q99",
                     "action.left_gripper": "binary",
                     "action.right_gripper": "binary",
                 },
@@ -874,15 +891,16 @@ class AgilexDataConfig:
         }
         return modality_configs
 
-    def transform(self):
+    def transform(self, data_cfg: dict | None = None):
+        joint_norm_mode = _get_robotwin_joint_normalization_mode(data_cfg)
         transforms = [
             # state transforms
             StateActionToTensor(apply_to=self.state_keys),
             StateActionTransform(
                 apply_to=self.state_keys,
                 normalization_modes={
-                    "state.left_joints": "min_max",
-                    "state.right_joints": "min_max",
+                    "state.left_joints": joint_norm_mode,
+                    "state.right_joints": joint_norm_mode,
                     "state.left_gripper": "binary",
                     "state.right_gripper": "binary",
                 },
@@ -892,8 +910,8 @@ class AgilexDataConfig:
             StateActionTransform(
                 apply_to=self.action_keys,
                 normalization_modes={
-                    "action.left_joints": "min_max",
-                    "action.right_joints": "min_max",
+                    "action.left_joints": joint_norm_mode,
+                    "action.right_joints": joint_norm_mode,
                     "action.left_gripper": "binary",
                     "action.right_gripper": "binary",
                 },
@@ -953,7 +971,8 @@ class AgilexData50Config:
         }
         return modality_configs
 
-    def transform(self):
+    def transform(self, data_cfg: dict | None = None):
+        joint_norm_mode = _get_robotwin_joint_normalization_mode(data_cfg)
         transforms = [
             # state transforms
             StateActionToTensor(apply_to=self.state_keys),
@@ -961,8 +980,8 @@ class AgilexData50Config:
                 apply_to=self.state_keys,
                 binary_threshold=0.49,
                 normalization_modes={
-                    "state.left_joints": "min_max",
-                    "state.right_joints": "min_max",
+                    "state.left_joints": joint_norm_mode,
+                    "state.right_joints": joint_norm_mode,
                     "state.left_gripper": "binary",
                     "state.right_gripper": "binary",
                 },
@@ -973,8 +992,8 @@ class AgilexData50Config:
                 apply_to=self.action_keys,
                 binary_threshold=0.49,
                 normalization_modes={
-                    "action.left_joints": "min_max",
-                    "action.right_joints": "min_max",
+                    "action.left_joints": joint_norm_mode,
+                    "action.right_joints": joint_norm_mode,
                     "action.left_gripper": "binary",
                     "action.right_gripper": "binary",
                 },
