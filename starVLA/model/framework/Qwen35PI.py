@@ -84,7 +84,9 @@ class Qwen35_PI(baseframework):
 
         self.future_action_window_size = config.framework.action_model.future_action_window_size
         self.past_action_window_size = config.framework.action_model.past_action_window_size
-        self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
+        # UNUSED: chunk_len is kept for reference only; the model predicts future_action_window_size+1
+        # steps and past_action_window_size is not fed into the action head.
+        # self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
         
     def forward(
         self,

@@ -51,6 +51,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--output-root",   default=None,   help="Root dir for results (default: starVLA/results)")
     p.add_argument("--task-name",     default=None,   help="Limit eval to a single task subdirectory")
     p.add_argument("--gpu-ids",       default=None,   help="Comma-separated GPU IDs matching --ports order (e.g. 0,1,2,3)")
+    p.add_argument("--split",         default="Randomized", help="Dataset split subdirectory (e.g. Clean or Randomized)")
     return p.parse_args()
 
 
@@ -82,12 +83,13 @@ def _discover_task_items(
     task_filter: str | None,
     load_metadata,     # callable: (repo_id) -> (init_states, episodes)
     build_records,     # callable: (init_states, episodes) -> records
+    split: str = "Randomized",
 ) -> list[dict]:
     """
-    Walk HF_LEROBOT_HOME/<dataset_name>/Randomized/ and build one task item
+    Walk HF_LEROBOT_HOME/<dataset_name>/<split>/ and build one task item
     per (task_name, task_config) group.  Each item carries its own repo_id.
     """
-    dataset_root = _get_lerobot_home() / dataset_name / "Randomized"
+    dataset_root = _get_lerobot_home() / dataset_name / split
     if not dataset_root.is_dir():
         raise FileNotFoundError(f"Dataset root not found: {dataset_root}")
 
@@ -100,7 +102,7 @@ def _discover_task_items(
     task_items: list[dict] = []
     for task_dir in task_dirs:
         task_name = task_dir.name
-        repo_id = f"{dataset_name}/Randomized/{task_name}"
+        repo_id = f"{dataset_name}/{split}/{task_name}"
         init_states, episodes = load_metadata(repo_id)
         records = sorted(build_records(init_states, episodes), key=lambda r: r["episode_index"])
 
@@ -119,9 +121,10 @@ def _discover_task_items(
     return task_items
 
 
-def _print_banner(dataset_name, ports, exp_name, max_episodes, task_filter, task_items) -> None:
+def _print_banner(dataset_name, ports, exp_name, max_episodes, task_filter, task_items, split="Randomized") -> None:
     print("=" * 72)
     print(f"  dataset       : {dataset_name}")
+    print(f"  split         : {split}")
     print(f"  ports         : {ports}")
     print(f"  num_workers   : {len(ports)}")
     print(f"  exp_name      : {exp_name}")
@@ -167,13 +170,14 @@ def main() -> None:
         task_filter=args.task_name,
         load_metadata=_load_test_metadata,
         build_records=_build_episode_records,
+        split=args.split,
     )
 
     if not task_items:
         print("ERROR: no tasks found.")
         sys.exit(1)
 
-    _print_banner(args.dataset_name, ports, args.exp_name, args.max_episodes, args.task_name, task_items)
+    _print_banner(args.dataset_name, ports, args.exp_name, args.max_episodes, args.task_name, task_items, args.split)
 
     # ---------- queues ----------
     task_queue:   mp.Queue = mp.Queue()
@@ -340,7 +344,7 @@ def main() -> None:
         f"  (planned={overall_planned}, unstable_skipped={overall_unstable})"
     )
     print(f"Saved: {summary_path}")
-    # Clean up partial summary now that the final one is written
+    # Clean up partial summary now that the final one unnorm_keyis written
     partial_path = exp_root / "_partial_summary.json"
     if partial_path.exists():
         partial_path.unlink()

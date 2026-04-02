@@ -28,7 +28,7 @@ policy_ckpt_path: "results/Checkpoints/260331_robotwin_all_qwen35_pi_c40r10/chec
 
 unnorm_key: "new_embodiment"  # [both]  key into the checkpoint's normalization stats
 action_mode: "abs"            # [both]  abs | delta | rel
-normalization_mode: "min_max" # [both]  min_max | q99
+normalization_mode: "q99" # [both]  min_max | q99
 
 # Receding-horizon execution (action jitter reduction)
 # Re-predict every exec_horizon steps instead of every action_chunk_size steps.

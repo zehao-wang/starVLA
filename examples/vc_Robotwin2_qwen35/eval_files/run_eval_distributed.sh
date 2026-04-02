@@ -19,6 +19,7 @@
 #   ROBOTWIN_CONDA_ENV   name of the RoboTwin conda environment
 #   STAR_VLA_PYTHON      path to the starVLA python binary
 #   ROBOTWIN_PATH        path to packages/RoboTwin  (auto-derived if unset)
+#   SPLIT                dataset split subdirectory: Clean or Randomized  (default: Randomized)
 
 set -e
 
@@ -33,6 +34,7 @@ EXP_NAME=${2:-starvla_dist_eval}
 MAX_EPISODES=${3:-none}
 GPU_IDS_ARG=${4:-}          # e.g. "0,1,2,3" — empty → auto-detect
 BASE_PORT=${5:-5694}
+SPLIT=${SPLIT:-Randomized}  # e.g. SPLIT=Clean  (env var, default: Randomized)
 
 HF_LEROBOT_HOME=${HF_LEROBOT_HOME:-/shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot}
 ROBOTWIN_CONDA_ENV=${ROBOTWIN_CONDA_ENV:-RoboTwin}
@@ -182,7 +184,8 @@ conda run -n "$ROBOTWIN_CONDA_ENV" --no-capture-output \
         --gpu-ids       "$GPU_IDS_CSV" \
         --exp-name      "$EXP_NAME" \
         --max-episodes  "$MAX_EPISODES" \
-        --policy-config "$DEPLOY_POLICY_YML"
+        --policy-config "$DEPLOY_POLICY_YML" \
+        --split         "$SPLIT"
 
 echo ""
 echo "======================================================================"
