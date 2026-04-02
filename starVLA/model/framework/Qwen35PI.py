@@ -32,7 +32,7 @@ from starVLA.training.trainer_utils.trainer_tools import resize_images
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 
 ####################################################
-# ⚠️ Warning: This framework has been restructured and is NOT compatible with checkpoints created before 2025-10-20.
+# ⚠️ Warning: This framework has been restructured and is NOT compatible with checkpoints created before 2026-04-01.
 ####################################################
 
 @FRAMEWORK_REGISTRY.register("Qwen35PI")

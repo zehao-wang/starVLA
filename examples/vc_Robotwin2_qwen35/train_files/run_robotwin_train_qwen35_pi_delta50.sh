@@ -28,7 +28,7 @@ if [[ "$machine" == "l40s" ]]; then
 elif [[ "$machine" == "a100" ]]; then
     export NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-ens32}
     export NCCL_IB_HCA=${NCCL_IB_HCA:-ens65,ens129,ens161}
-    per_device_batch_size=8
+    per_device_batch_size=4
 elif [[ "$machine" == "h100" ]]; then
     export NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-enp}
     export FI_EFA_USE_DEVICE_RDMA=${FI_EFA_USE_DEVICE_RDMA:-1}
@@ -81,7 +81,7 @@ else
     eval_interval=5000
 fi
 
-run_id=260402_${data_mix}_qwen35_pi_delta50_c40r10
+run_id=260403_${machine}_${data_mix}_qwen35_pi_delta50_c40r10
 
 echo "MODE: ${MODE} | data_mix: ${data_mix} | batch: ${per_device_batch_size} | steps: ${max_train_steps}"
 
@@ -146,6 +146,7 @@ accelerate launch \
   --datasets.vla_data.data_mix ${data_mix} \
   --datasets.vla_data.action_mode delta \
   --datasets.vla_data.action_type delta_qpos \
+  --datasets.vla_data.normalization_mode q99 \
   --trainer.freeze_modules ${freeze_module_list} \
   --trainer.max_train_steps ${max_train_steps} \
   --trainer.num_warmup_steps ${num_warmup_steps} \

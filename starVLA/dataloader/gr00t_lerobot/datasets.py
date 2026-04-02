@@ -2157,7 +2157,8 @@ class LeRobotMixtureDataset(Dataset):
         self.balance_trajectory_weights = balance_trajectory_weights
         self.seed = seed
         self.mode = mode
-        self.data_cfg = kwargs["data_cfg"] if "data_cfg" in kwargs else None
+        self.data_cfg = kwargs.get("data_cfg", None)
+        self._cached_statistics_path = kwargs.get("cached_statistics_path", None)
 
         # Set properties for sampling
 
@@ -2243,7 +2244,7 @@ class LeRobotMixtureDataset(Dataset):
                     rng.shuffle(self._step_order[-1])
                 self._step_pos.append(0)
 
-        self.update_metadata(metadata_config)
+        self.update_metadata(metadata_config, cached_statistics_path=self._cached_statistics_path)
 
     @property
     def dataset_lengths(self) -> np.ndarray:

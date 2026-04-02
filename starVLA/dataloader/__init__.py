@@ -39,19 +39,25 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
         from starVLA.dataloader.lerobot_datasets import get_vla_dataset, collate_fn
         vla_dataset_cfg = cfg.datasets.vla_data
 
-        vla_dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
-        
+        output_dir = Path(cfg.output_dir)
+        stats_path = output_dir / "dataset_statistics.json"
+        cached_statistics_path = stats_path if stats_path.exists() else None
+        if cached_statistics_path is not None:
+            logger.info(f"Found existing dataset_statistics.json, loading from cache: {cached_statistics_path}")
+        else:
+            logger.info("No cached dataset_statistics.json found, will compute and save.")
+
+        vla_dataset = get_vla_dataset(data_cfg=vla_dataset_cfg, cached_statistics_path=cached_statistics_path)
+
         vla_train_dataloader = DataLoader(
             vla_dataset,
             batch_size=cfg.datasets.vla_data.per_device_batch_size,
             collate_fn=collate_fn,
             num_workers=4,
             # shuffle=True
-        )        
-        if dist.get_rank() == 0: 
-            
-            output_dir = Path(cfg.output_dir)
-            vla_dataset.save_dataset_statistics(output_dir / "dataset_statistics.json")
+        )
+        if dist.get_rank() == 0 and cached_statistics_path is None:
+            vla_dataset.save_dataset_statistics(stats_path)
         return vla_train_dataloader
     elif dataset_py == "vlm_datasets":
         vlm_data_module = make_vlm_dataloader(cfg)
