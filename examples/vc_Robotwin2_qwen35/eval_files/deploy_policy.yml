@@ -16,6 +16,8 @@ ckpt_setting: null        # [random]  RoboTwin checkpoint alias, overridden by e
 seed: null                # [random]  overridden by eval.sh CLI arg; dataset mode uses per-episode seeds from dataset
 instruction_type: unseen  # [random]  read by eval_policy.py for instruction sampling
 
+exp_name: "qwen35_action"
+
 # ---------------------------------------------------------------------------
 # StarVLA model client  (model2robotwin_interface.py)
 # ---------------------------------------------------------------------------
@@ -24,7 +26,7 @@ port: 5694         # [both]  policy server port; distributed eval overrides this
 
 # ★ Primary field to change when switching checkpoints
 # Also read by run_eval_distributed.sh to launch the server process.
-policy_ckpt_path: "results/Checkpoints/260331_robotwin_all_qwen35_pi_c40r10/checkpoints/steps_10000_pytorch_model.pt"
+policy_ckpt_path: "results/Checkpoints/260331_robotwin_all_qwen35_pi_c40r10/final_model/pytorch_model.pt"
 
 unnorm_key: "new_embodiment"  # [both]  key into the checkpoint's normalization stats
 action_mode: "abs"            # [both]  abs | delta | rel

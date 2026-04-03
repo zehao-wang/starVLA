@@ -1,28 +1,28 @@
 #!/bin/bash
-# run_eval_distributed.sh — Full-node distributed eval for starVLA on RoboTwin2.
+# run_eval_single_task.sh — Single-GPU eval for one specified task on RoboTwin2.
 #
-# One policy server per GPU, one eval worker per server.
-# A shared task queue feeds all workers; each worker is always busy.
+# One policy server + one eval worker.
 #
 # Usage (from packages/starVLA/, starVLA env active):
 #
 #   # Recommended (unified): env vars + optional --flags
-#   HF_DATASET_NAME=lerobot_robotwin_rand20k_debug \
-#   bash examples/vc_Robotwin2_qwen35/eval_files/run_eval_distributed.sh
+#   HF_DATASET_NAME=lerobot_robotwin_rand20k_debug TASK_NAME=adjust_bottle \
+#   bash examples/vc_Robotwin2_qwen35/eval_files/run_eval_single_task.sh
 #
 #   # Optional CLI overrides (same names as env vars)
-#   bash examples/vc_Robotwin2_qwen35/eval_files/run_eval_distributed.sh \
+#   bash examples/vc_Robotwin2_qwen35/eval_files/run_eval_single_task.sh \
 #       --dataset-name lerobot_robotwin_rand20k_debug \
-#       --max-episodes none --gpu-ids 0,1,2,3 --base-port 5694
+#       --task-name adjust_bottle --gpu-id 0 --port 5694
 #
 # exp_name is read from DEPLOY_POLICY_YML (field: exp_name).
-# If missing/empty, fallback: starvla_dist_eval
+# If missing/empty, fallback: starvla_single_task_eval
 #
 # Environment variables (override defaults):
 #   HF_DATASET_NAME      lerobot dataset name
+#   TASK_NAME            eval task name  (default: adjust_bottle)
 #   MAX_EPISODES         max episodes per task  (default: none)
-#   GPU_IDS              comma-separated GPU IDs (default: auto-detect)
-#   BASE_PORT            first service port  (default: 5694)
+#   GPU_ID               GPU ID  (default: 0)
+#   PORT                 policy server port  (default: 5694)
 #   DEPLOY_POLICY_YML    path to deploy_policy.yml  (default: eval_files/deploy_policy.yml)
 #   HF_LEROBOT_HOME      path to lerobot dataset root
 #   ROBOTWIN_CONDA_ENV   name of the RoboTwin conda environment
@@ -39,10 +39,11 @@ STARVLA_PATH=$EVAL_FILES_PATH/../../..
 # Config
 # ---------------------------------------------------------------------------
 HF_DATASET_NAME=${HF_DATASET_NAME:-lerobot_robotwin_rand20k_debug}
+TASK_NAME=${TASK_NAME:-adjust_bottle}
 MAX_EPISODES=${MAX_EPISODES:-none}
-GPU_IDS_ARG=${GPU_IDS:-}    # e.g. "0,1,2,3" — empty → auto-detect
-BASE_PORT=${BASE_PORT:-5694}
-SPLIT=${SPLIT:-Randomized}  # e.g. SPLIT=Clean  (env var, default: Randomized)
+GPU_ID=${GPU_ID:-0}
+PORT=${PORT:-5694}
+SPLIT=${SPLIT:-Randomized}
 
 HF_LEROBOT_HOME=${HF_LEROBOT_HOME:-/shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot}
 ROBOTWIN_CONDA_ENV=${ROBOTWIN_CONDA_ENV:-RoboTwin}
@@ -51,20 +52,22 @@ STAR_VLA_PYTHON=${STAR_VLA_PYTHON:-/shared/home/ZWA0839/.conda/envs/starVLA/bin/
 print_usage() {
     cat <<'EOF'
 Usage:
-  run_eval_distributed.sh [--dataset-name NAME] [--max-episodes N|none]
-                          [--gpu-ids IDS] [--base-port PORT] [--split SPLIT]
-                          [--deploy-policy-yml PATH] [--hf-lerobot-home PATH]
-                          [--robotwin-conda-env NAME] [--star-vla-python PATH]
-                          [--robotwin-path PATH]
+  run_eval_single_task.sh [--dataset-name NAME] [--task-name TASK]
+                          [--max-episodes N|none] [--gpu-id ID] [--port PORT]
+                          [--split SPLIT] [--deploy-policy-yml PATH]
+                          [--hf-lerobot-home PATH] [--robotwin-conda-env NAME]
+                          [--star-vla-python PATH] [--robotwin-path PATH]
 EOF
 }
 
+# Unified long options
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dataset-name) HF_DATASET_NAME="$2"; shift 2 ;;
+        --task-name) TASK_NAME="$2"; shift 2 ;;
         --max-episodes) MAX_EPISODES="$2"; shift 2 ;;
-        --gpu-ids) GPU_IDS_ARG="$2"; shift 2 ;;
-        --base-port) BASE_PORT="$2"; shift 2 ;;
+        --gpu-id) GPU_ID="$2"; shift 2 ;;
+        --port) PORT="$2"; shift 2 ;;
         --split) SPLIT="$2"; shift 2 ;;
         --deploy-policy-yml) DEPLOY_POLICY_YML="$2"; shift 2 ;;
         --hf-lerobot-home) HF_LEROBOT_HOME="$2"; shift 2 ;;
@@ -88,6 +91,11 @@ if [[ ! -f "$DEPLOY_POLICY_YML" ]]; then
 fi
 DEPLOY_POLICY_YML=$(realpath "$DEPLOY_POLICY_YML")
 
+if [[ -z "$TASK_NAME" ]]; then
+    echo "ERROR: TASK_NAME is empty. Use env TASK_NAME or --task-name."
+    exit 1
+fi
+
 # Read ckpt path and exp name from deploy_policy.yml
 readarray -t _POLICY_INFO < <(python3 -c "
 import yaml, pathlib
@@ -100,7 +108,7 @@ print(ckpt)
 print(exp_name)
 ")
 CKPT_PATH=${_POLICY_INFO[0]}
-EXP_NAME=${_POLICY_INFO[1]:-starvla_dist_eval}
+EXP_NAME=${_POLICY_INFO[1]:-starvla_single_task_eval}
 
 if [[ -z "$CKPT_PATH" ]]; then
     echo "ERROR: policy_ckpt_path not set in $DEPLOY_POLICY_YML"
@@ -108,41 +116,20 @@ if [[ -z "$CKPT_PATH" ]]; then
 fi
 
 if [[ -z "$EXP_NAME" ]]; then
-    EXP_NAME=starvla_dist_eval
+    EXP_NAME=starvla_single_task_eval
 fi
-
-# ---------------------------------------------------------------------------
-# GPU discovery
-# ---------------------------------------------------------------------------
-if [[ -n "$GPU_IDS_ARG" ]]; then
-    IFS=',' read -ra GPU_IDS <<< "$GPU_IDS_ARG"
-else
-    NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo 1)
-    GPU_IDS=()
-    for ((i=0; i<NUM_GPUS; i++)); do GPU_IDS+=("$i"); done
-fi
-
-NUM_WORKERS=${#GPU_IDS[@]}
-
-# Build comma-separated port list for the orchestrator
-PORTS=""
-SERVER_PIDS=()
-for ((i=0; i<NUM_WORKERS; i++)); do
-    PORT=$((BASE_PORT + i))
-    PORTS="${PORTS:+$PORTS,}$PORT"
-done
 
 # ---------------------------------------------------------------------------
 # Banner
 # ---------------------------------------------------------------------------
 echo "======================================================================"
 echo "  dataset       : $HF_DATASET_NAME"
+echo "  task_name     : $TASK_NAME"
 echo "  exp_name      : $EXP_NAME"
 echo "  max_episodes  : $MAX_EPISODES"
-echo "  gpu_ids       : ${GPU_IDS[*]}"
-echo "  base_port     : $BASE_PORT"
-echo "  ports         : $PORTS"
-echo "  num_workers   : $NUM_WORKERS"
+echo "  gpu_id        : $GPU_ID"
+echo "  port          : $PORT"
+echo "  split         : $SPLIT"
 echo "  policy_config : $DEPLOY_POLICY_YML"
 echo "  ckpt          : $CKPT_PATH"
 echo "  robotwin_path : $ROBOTWIN_PATH"
@@ -150,40 +137,33 @@ echo "======================================================================"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Start one policy server per GPU (background)
+# Start policy server (background)
 # ---------------------------------------------------------------------------
 LOG_DIR=$EVAL_FILES_PATH/logs
 mkdir -p "$LOG_DIR"
+LOG=$LOG_DIR/server_gpu${GPU_ID}_port${PORT}.log
 
-echo "[1/3] Starting $NUM_WORKERS policy server(s) …"
-for ((i=0; i<NUM_WORKERS; i++)); do
-    GPU_ID=${GPU_IDS[$i]}
-    PORT=$((BASE_PORT + i))
-    LOG=$LOG_DIR/server_gpu${GPU_ID}_port${PORT}.log
+echo "[1/3] Starting policy server ..."
+bash "$EVAL_FILES_PATH/run_policy_server_gpu.sh" \
+    "$GPU_ID" "$PORT" "$CKPT_PATH" \
+    > "$LOG" 2>&1 &
+SERVER_PID=$!
+echo "    GPU ${GPU_ID}  port ${PORT}  PID ${SERVER_PID}  log: $LOG"
 
-    bash "$EVAL_FILES_PATH/run_policy_server_gpu.sh" \
-        "$GPU_ID" "$PORT" "$CKPT_PATH" \
-        > "$LOG" 2>&1 &
-    SERVER_PIDS+=($!)
-    echo "    GPU ${GPU_ID}  port ${PORT}  PID ${SERVER_PIDS[$i]}  log: $LOG"
-done
-
-# Cleanup trap — kill all servers on exit
+# Cleanup trap
 cleanup() {
     echo ""
-    echo "Stopping policy server(s) …"
-    for pid in "${SERVER_PIDS[@]}"; do
-        kill "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
-    done
+    echo "Stopping policy server ..."
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# Wait until every server port is ready
+# Wait until server port is ready
 # ---------------------------------------------------------------------------
 echo ""
-echo "[2/3] Waiting for all $NUM_WORKERS server(s) to be ready …"
+echo "[2/3] Waiting for server to be ready ..."
 MAX_WAIT=360
 _port_open() {
     python3 -c "
@@ -198,40 +178,36 @@ except Exception:
     sys.exit(1)
 " "$1" 2>/dev/null
 }
-for ((i=0; i<NUM_WORKERS; i++)); do
-    PORT=$((BASE_PORT + i))
-    elapsed=0
-    while ! _port_open "$PORT"; do
-        if [[ $elapsed -ge $MAX_WAIT ]]; then
-            echo "ERROR: Server on port $PORT did not start within ${MAX_WAIT}s."
-            echo "       Check $LOG_DIR/server_gpu${GPU_IDS[$i]}_port${PORT}.log"
-            exit 1
-        fi
-        sleep 2
-        elapsed=$((elapsed + 2))
-    done
-    echo "    port $PORT ready after ${elapsed}s"
+
+elapsed=0
+while ! _port_open "$PORT"; do
+    if [[ $elapsed -ge $MAX_WAIT ]]; then
+        echo "ERROR: Server on port $PORT did not start within ${MAX_WAIT}s."
+        echo "       Check $LOG"
+        exit 1
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
 done
+echo "    port $PORT ready after ${elapsed}s"
 echo ""
 
 # ---------------------------------------------------------------------------
 # Launch orchestrator (runs under RoboTwin conda env)
 # ---------------------------------------------------------------------------
-echo "[3/3] Launching eval orchestrator …"
+echo "[3/3] Launching single-task eval orchestrator ..."
 echo ""
 
 export PYTHONPATH=$ROBOTWIN_PATH:$STARVLA_PATH:$EVAL_FILES_PATH:${PYTHONPATH:-}
 export HF_LEROBOT_HOME
 export ROBOTWIN_PATH
 
-
-GPU_IDS_CSV=$(IFS=,; echo "${GPU_IDS[*]}")
-
 conda run -n "$ROBOTWIN_CONDA_ENV" --no-capture-output \
     python "$EVAL_FILES_PATH/utils/eval_orchestrator.py" \
         --dataset-name  "$HF_DATASET_NAME" \
-        --ports         "$PORTS" \
-        --gpu-ids       "$GPU_IDS_CSV" \
+        --task-name     "$TASK_NAME" \
+        --ports         "$PORT" \
+        --gpu-ids       "$GPU_ID" \
         --exp-name      "$EXP_NAME" \
         --max-episodes  "$MAX_EPISODES" \
         --policy-config "$DEPLOY_POLICY_YML" \
@@ -239,5 +215,5 @@ conda run -n "$ROBOTWIN_CONDA_ENV" --no-capture-output \
 
 echo ""
 echo "======================================================================"
-echo "Distributed eval complete."
+echo "Single-task eval complete."
 echo "======================================================================"
