@@ -147,6 +147,7 @@ accelerate launch \
   --datasets.vla_data.action_mode delta \
   --datasets.vla_data.action_type delta_qpos \
   --datasets.vla_data.normalization_mode q99 \
+  --datasets.vla_data.action_mode_apply_keys [action.left_joints,action.right_joints] \
   --trainer.freeze_modules ${freeze_module_list} \
   --trainer.max_train_steps ${max_train_steps} \
   --trainer.num_warmup_steps ${num_warmup_steps} \
