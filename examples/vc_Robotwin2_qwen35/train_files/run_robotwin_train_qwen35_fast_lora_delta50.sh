@@ -61,6 +61,8 @@ base_vlm=playground/Pretrained_models/Qwen3.5-2B
 base_vlm_action=playground/Pretrained_models/Qwen3.5-2B-Action
 config_yaml=./examples/vc_Robotwin2_qwen35/train_files/starvla_cotrain_robotwin_qwen35_fast_lora.yaml
 run_root_dir=./results/Checkpoints
+action_mode=delta
+normalization_mode=q99
 
 if [ "$MODE" = "debug" ]; then
     data_root=/shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot/lerobot_robotwin_rand20k_debug
@@ -75,7 +77,7 @@ else
     data_mix=robotwin_all_50
     data_root=/shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot/lerobot_robotwin_mixed_c40r10_vc_train
     per_device_batch_size=${per_device_batch_size}
-    max_train_steps=100000
+    max_train_steps=50000
     num_warmup_steps=5000
     save_interval=1000
     logging_frequency=100
@@ -96,6 +98,17 @@ echo "MODE: ${MODE} | data_mix: ${data_mix} | batch: ${per_device_batch_size} | 
 output_dir=${run_root_dir}/${run_id}
 mkdir -p ${output_dir}
 cp $0 ${output_dir}/
+
+# ---------------------------------------------------------------------------
+# Auto-generate eval artifacts in output_dir
+#   via shared helper script
+# ---------------------------------------------------------------------------
+bash "${SCRIPT_DIR}/generate_eval_artifacts.sh" \
+    "${REPO_ROOT}" \
+    "${output_dir}" \
+    "${run_id}" \
+    "${action_mode}" \
+    "${normalization_mode}"
 
 is_resume_flag=""
 if compgen -G "${output_dir}/checkpoints/steps_*" > /dev/null 2>&1; then
@@ -150,9 +163,9 @@ accelerate launch \
   --datasets.vla_data.per_device_batch_size ${per_device_batch_size} \
   --datasets.vla_data.data_root_dir ${data_root} \
   --datasets.vla_data.data_mix ${data_mix} \
-  --datasets.vla_data.action_mode delta \
+    --datasets.vla_data.action_mode ${action_mode} \
   --datasets.vla_data.action_type delta_qpos \
-  --datasets.vla_data.normalization_mode q99 \
+    --datasets.vla_data.normalization_mode ${normalization_mode} \
   --datasets.vla_data.action_mode_apply_keys [action.left_joints,action.right_joints] \
   --datasets.vla_data.include_state true \
   --trainer.freeze_modules ${freeze_module_list} \
