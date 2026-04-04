@@ -93,7 +93,7 @@ cp $0 ${output_dir}/
 # Auto-generate eval artifacts in output_dir
 #   via shared helper script
 # ---------------------------------------------------------------------------
-bash "${SCRIPT_DIR}/generate_eval_artifacts.sh" \
+bash "${REPO_ROOT}/examples/vc_Robotwin2_qwen35/eval_files/batch_submission/generate_eval_artifacts.sh" \
     "${REPO_ROOT}" \
     "${output_dir}" \
     "${run_id}" \

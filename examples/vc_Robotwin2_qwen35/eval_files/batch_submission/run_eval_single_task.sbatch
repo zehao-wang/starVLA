@@ -8,8 +8,19 @@
 
 set -e
 
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-EVAL_FILES_DIR=$(realpath "$SCRIPT_DIR/..")
+# NOTE: Do not derive from $0 here.
+# Under Slurm, the script can be staged to /var/spool/slurmd and $0 points there.
+# We pass EVAL_FILES_DIR explicitly from submit_multi_tasks.sh.
+EVAL_FILES_DIR=${EVAL_FILES_DIR:-}
+if [[ -z "$EVAL_FILES_DIR" ]]; then
+	echo "ERROR: EVAL_FILES_DIR is empty. Submit via batch_submission/submit_multi_tasks.sh."
+	exit 1
+fi
+EVAL_FILES_DIR=$(realpath "$EVAL_FILES_DIR")
+if [[ ! -f "$EVAL_FILES_DIR/run_eval_single_task.sh" ]]; then
+	echo "ERROR: invalid EVAL_FILES_DIR: $EVAL_FILES_DIR"
+	exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # External parameters (override via: sbatch --export=ALL,KEY=VALUE,...)
