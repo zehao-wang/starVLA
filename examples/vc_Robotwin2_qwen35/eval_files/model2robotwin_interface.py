@@ -127,8 +127,9 @@ class ModelClient:
         # images = [self._resize_image(image) for image in images]
 
         example["image"] = images
+        # Keep `state` for server-side models (e.g., Qwen35Fast) that require it.
+        # Eval always provides state, and sending it is compatible with PI-style models.
         example_copy = example.copy()
-        example_copy.pop("state")
         vla_input = {
             "examples": [example_copy],
             "do_sample": False,
@@ -138,11 +139,18 @@ class ModelClient:
 
         if step % self.exec_horizon == 0 or self.raw_actions is None:
             response = self.client.predict_action(vla_input)
-            try:
-                normalized_actions = response["data"]["normalized_actions"]  # B, chunk, D
-            except KeyError:
-                print(f"Response data: {response}")
-                raise KeyError(f"Key 'normalized_actions' not found in response data: {response['data'].keys()}")
+            if not isinstance(response, dict):
+                raise RuntimeError(f"Malformed response type: {type(response)}")
+
+            data = response.get("data")
+            if not isinstance(data, dict):
+                raise RuntimeError(f"Missing or invalid 'data' field in response: {response}")
+
+            normalized_actions = data.get("normalized_actions")
+            if normalized_actions is None:
+                raise RuntimeError(
+                    f"Missing 'normalized_actions' in response data. Keys: {list(data.keys())}"
+                )
 
             normalized_actions = normalized_actions[0]
             # Unnormalize to get delta/rel values
