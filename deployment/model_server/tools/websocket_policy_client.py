@@ -8,6 +8,7 @@ from typing import Dict, Optional, Tuple
 
 from typing_extensions import override
 import websockets.sync.client
+from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from . import msgpack_numpy
 
 
@@ -25,6 +26,10 @@ class WebsocketClientPolicy:
         self._packer = msgpack_numpy.Packer()
         self._api_key = api_key
         self._ws, self._server_metadata = self._wait_for_server()
+
+    def _reconnect(self, timeout: float = 120) -> None:
+        self.close()
+        self._ws, self._server_metadata = self._wait_for_server(timeout=timeout)
 
     def get_server_metadata(self) -> Dict:
         return self._server_metadata
@@ -65,11 +70,23 @@ class WebsocketClientPolicy:
     @override
     def predict_action(self, query_info: Dict) -> Dict:
         data = self._packer.pack(query_info)
-        self._ws.send(data)
-        response = self._ws.recv()
-        if isinstance(response, str):
-            raise RuntimeError(f"Error in inference server:\n{response}")
-        return msgpack_numpy.unpackb(response)
+        last_exc = None
+        for attempt in range(3):
+            try:
+                self._ws.send(data)
+                response = self._ws.recv()
+                if isinstance(response, str):
+                    raise RuntimeError(f"Error in inference server:\n{response}")
+                return msgpack_numpy.unpackb(response)
+            except (ConnectionClosedError, ConnectionClosedOK, BrokenPipeError, TimeoutError) as exc:
+                last_exc = exc
+                logging.warning(
+                    "Websocket request failed (attempt %s/3): %s. Reconnecting...",
+                    attempt + 1,
+                    exc,
+                )
+                self._reconnect(timeout=120)
+        raise RuntimeError(f"Websocket predict_action failed after retries: {last_exc}") from last_exc
 
 
 

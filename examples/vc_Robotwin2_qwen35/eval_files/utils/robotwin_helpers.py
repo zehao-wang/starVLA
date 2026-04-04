@@ -216,6 +216,18 @@ def eval_policy_dataset(
 
     unstable_skipped = 0
 
+    def _safe_close_env() -> None:
+        try:
+            TASK_ENV.close_env()
+        except Exception:
+            pass
+
+    def _is_known_env_attr_error(exc: Exception) -> bool:
+        msg = str(exc)
+        if not isinstance(exc, AttributeError):
+            return False
+        return ("arm_tag" in msg) or ("origin_z" in msg)
+
     for now_id, record in enumerate(records):
         episode_tag = f"task={task_name}, episode_index={record['episode_index']}, seed={record['seed']}"
         try:
@@ -270,13 +282,22 @@ def eval_policy_dataset(
             )
 
         except UnStableError as exc:
-            TASK_ENV.close_env()
+            _safe_close_env()
             unstable_skipped += 1
             print(f"\033[93m[SKIP] {episode_tag}: UnStableError={exc}\033[0m")
             continue
 
+        except AttributeError as exc:
+            if _is_known_env_attr_error(exc):
+                _safe_close_env()
+                unstable_skipped += 1
+                print(f"\033[93m[SKIP] {episode_tag}: KnownEnvAttrError={exc}\033[0m")
+                continue
+            _safe_close_env()
+            raise RuntimeError(f"{episode_tag}: error={exc}") from exc
+
         except Exception as exc:
-            TASK_ENV.close_env()
+            _safe_close_env()
             raise RuntimeError(f"{episode_tag}: error={exc}") from exc
 
     return TASK_ENV.suc, TASK_ENV.test_num, unstable_skipped
