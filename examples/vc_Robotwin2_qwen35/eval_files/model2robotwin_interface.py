@@ -102,10 +102,16 @@ class ModelClient:
         step: int = 0,
     ) -> np.ndarray:
         state = example.get("state", None)
-        # if state is not None:
-        #     state = self.normalize_state(state, self.state_norm_stats)
-        #     state = state[[0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 6, 13]]
-        #     example["state"] = state.reshape(1, -1)
+        if state is None:
+            raise ValueError("Evaluation example must include `state`.")
+
+        # Build model-side state payload to match training preprocessing:
+        # 1) normalize with training state stats (q99/min_max)
+        # 2) reorder robot format -> model format
+        #    robot: [left_6, left_gripper, right_6, right_gripper]
+        #    model: [left_6, right_6, left_gripper, right_gripper]
+        model_state = self.normalize_state(np.array(state), self.state_norm_stats, self.normalization_mode)
+        model_state = model_state[[0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 6, 13]]
 
         # Store initial state for rel mode (rel uses s_0 as anchor throughout episode)
         if self.action_mode == "rel" and self.initial_state is None:
@@ -130,6 +136,7 @@ class ModelClient:
         # Keep `state` for server-side models (e.g., Qwen35Fast) that require it.
         # Eval always provides state, and sending it is compatible with PI-style models.
         example_copy = example.copy()
+        example_copy["state"] = model_state
         vla_input = {
             "examples": [example_copy],
             "do_sample": False,
@@ -189,11 +196,29 @@ class ModelClient:
             state_norm_stats, normalization_mode=normalization_mode
         )
         valid_mask = continuous_mask & (state_high != state_low)
-        normalized_state = np.where(
-            valid_mask,
-            (state - state_low) / (state_high - state_low) * 2 - 1,
-            state,
-        )
+
+        # Keep behavior consistent with training normalizer:
+        # - q99: undefined dims (q01 == q99) keep original value, then clip to [-1, 1]
+        # - min_max: undefined dims (min == max) are set to 0
+        if normalization_mode == "q99":
+            normalized_state = np.where(
+                valid_mask,
+                (state - state_low) / (state_high - state_low) * 2 - 1,
+                state,
+            )
+            normalized_state = np.where(
+                continuous_mask,
+                np.clip(normalized_state, -1.0, 1.0),
+                normalized_state,
+            )
+        else:
+            normalized_state = np.where(
+                valid_mask,
+                (state - state_low) / (state_high - state_low) * 2 - 1,
+                0.0,
+            )
+            normalized_state = np.where(~continuous_mask, state, normalized_state)
+
         normalized_state = np.where(
             ~continuous_mask,
             (normalized_state > 0.5).astype(normalized_state.dtype),
