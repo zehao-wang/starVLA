@@ -84,6 +84,7 @@ class Qwen35_PI(baseframework):
 
         self.future_action_window_size = config.framework.action_model.future_action_window_size
         self.past_action_window_size = config.framework.action_model.past_action_window_size
+        self.use_state_input = bool(getattr(config.datasets.vla_data, "include_state", False))
         # UNUSED: chunk_len is kept for reference only; the model predicts future_action_window_size+1
         # steps and past_action_window_size is not fed into the action head.
         # self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
@@ -106,7 +107,9 @@ class Qwen35_PI(baseframework):
         batch_images = [example["image"] for example in examples]  #  [B，[PLT]]
         instructions = [example["lang"] for example in examples]  # [B, str]
         actions = [example["action"] for example in examples]  # label [B， len, state_dim]
-        state = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
+        state = None
+        if self.use_state_input and "state" in examples[0]:
+            state = [example["state"] for example in examples]  # [B, 1, state_dim]
 
         # QWen35 forward pass
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
@@ -178,7 +181,9 @@ class Qwen35_PI(baseframework):
         batch_images = [to_pil_preserve(example["image"]) for example in examples]  #  [B，[PLT]]
         instructions = [example["lang"] for example in examples]  # [B, str]
     
-        state = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
+        state = None
+        if self.use_state_input and "state" in examples[0]:
+            state = [example["state"] for example in examples]  # [B, 1, state_dim]
         
         train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", None)
         if train_obs_image_size:

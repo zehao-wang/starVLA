@@ -285,7 +285,7 @@ class LayerwiseFlowmatchingActionHead(nn.Module):
         action_features = self.action_encoder(noisy_trajectory, t_discretized)
 
         # Embed state
-        state_features = self.state_encoder(state) if state is not None else None
+        state_features = self.state_encoder(state) if (state is not None and self.state_encoder is not None) else None
 
         # Maybe add position embedding.
         if self.config.add_pos_embed:
@@ -333,7 +333,7 @@ class LayerwiseFlowmatchingActionHead(nn.Module):
         num_steps = self.num_inference_timesteps
         dt = 1.0 / num_steps
 
-        state_features = self.state_encoder(state) if state is not None else None
+        state_features = self.state_encoder(state) if (state is not None and self.state_encoder is not None) else None
 
         # Run denoising steps.
         for t in range(num_steps):
