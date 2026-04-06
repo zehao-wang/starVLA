@@ -88,7 +88,7 @@ fi
 bash examples/vc_Robotwin2_qwen35/train_files/add_fast_tokens.sh ${base_vlm} ${base_vlm_action}
 if [ $? -ne 0 ]; then exit 1; fi
 
-run_id=260403_${machine}_${data_mix}_qwen35_fast_delta50_c40r10
+run_id=260405_${machine}_${data_mix}_qwen35_fast_delta50_c40r10
 
 echo "MODE: ${MODE} | data_mix: ${data_mix} | batch: ${per_device_batch_size} | steps: ${max_train_steps}"
 
