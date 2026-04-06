@@ -46,6 +46,7 @@ class WebsocketPolicyServer:
             self._port,
             compression=None,
             max_size=None,
+            ping_interval=None,  # disable keepalive pings: inference blocks the event loop and causes ping timeout
         ) as server:
             if self._idle_timeout > 0:
                 await self._idle_watchdog(server)
@@ -96,7 +97,7 @@ class WebsocketPolicyServer:
         """
         req_id = msg.get("request_id", "default")
         mtype = msg.get("type", "infer")          # default = infer
-        msg       # when no explicit payload, treat top-level as payload
+        payload = msg.get("payload", msg)  # when no explicit payload, treat top-level as payload
 
         # ping
         if mtype == "ping":
@@ -105,7 +106,7 @@ class WebsocketPolicyServer:
         # infer --> framework.predict_action
         elif mtype == "infer" or mtype == "predict_action":
             # Basic payload sanity
-            if not isinstance(msg, dict):
+            if not isinstance(payload, dict):
                 return {
                     "status": "error",
                     "ok": False,
@@ -114,8 +115,7 @@ class WebsocketPolicyServer:
                     "error": {"message": "Payload must be a dict", "payload_type": str(type(payload))}
                 }
             try:
-
-                ouput_dict = self._policy.predict_action(**msg)
+                ouput_dict = self._policy.predict_action(**payload)
             except Exception as e:
                 logging.exception("Policy inference error (request_id=%s)", req_id)
                 logging.exception(e)

@@ -28,8 +28,8 @@ VIDEO_TOKEN_INDEX = 248057
 DEFAULT_IMAGE_TOKEN = "<image>"
 DEFAULT_VIDEO_TOKEN = "<video>"
 
-_ACTION_TOKEN_MIN = 248320 # start idx from add_special_tokens_to_qwen35.py output
-_ACTION_TOKEN_MAX = 248320 + 2047 # 2048 action tokens total
+_ACTION_TOKEN_MIN = 248077 # start idx from playground/Pretrained_models/Qwen3.5-2B-Action/added_custom_token_id_map.json
+_ACTION_TOKEN_MAX = 248077 + 2047 # 2048 action tokens total (250124)
 
 
 import torch.nn as nn

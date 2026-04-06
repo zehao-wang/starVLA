@@ -2803,6 +2803,60 @@ class LeRobotMixtureDataset(Dataset):
         Args:
             cached_statistics (dict): Statistics loaded from file
         """
+        def _is_flattened_combined_stats(stats_obj: dict) -> bool:
+            if not isinstance(stats_obj, dict):
+                return False
+            required = {"mean", "std", "max", "min", "q01", "q99"}
+            return required.issubset(stats_obj.keys()) and all(not isinstance(stats_obj[k], dict) for k in required)
+
+        def _expand_flattened_stats(
+            combined_stats: dict,
+            key_order: list[str],
+            modality_meta: dict,
+            modality_name: str,
+        ) -> dict[str, dict[str, list[float]]]:
+            stat_names = ["mean", "std", "max", "min", "q01", "q99"]
+            values = {name: np.asarray(combined_stats.get(name, []), dtype=np.float32) for name in stat_names}
+
+            expanded: dict[str, dict[str, list[float]]] = {}
+            offset = 0
+            for key in key_order:
+                meta = modality_meta.get(key)
+                if meta is None:
+                    continue
+                shape = tuple(getattr(meta, "shape", ()))
+                width = int(np.prod(shape)) if len(shape) > 0 else 1
+
+                end = offset + width
+                for stat_name in stat_names:
+                    if end > len(values[stat_name]):
+                        raise ValueError(
+                            f"Cached {modality_name} statistics are shorter than expected for key '{key}' "
+                            f"(need {end}, got {len(values[stat_name])})."
+                        )
+
+                expanded[key] = {
+                    stat_name: values[stat_name][offset:end].tolist() for stat_name in stat_names
+                }
+                offset = end
+
+            return expanded
+
+        def _collect_used_keys_for_tag(tag: str) -> tuple[list[str], list[str]]:
+            used_action_keys: list[str] = []
+            used_state_keys: list[str] = []
+            for dataset in self.datasets:
+                if dataset.tag != tag:
+                    continue
+                act_keys, st_keys = get_used_modality_keys(dataset.modality_keys)
+                for key in act_keys:
+                    if key not in used_action_keys:
+                        used_action_keys.append(key)
+                for key in st_keys:
+                    if key not in used_state_keys:
+                        used_state_keys.append(key)
+            return used_action_keys, used_state_keys
+
         # Validate that cached statistics match current datasets
         if "metadata" in cached_statistics:
             cached_dataset_names = set(cached_statistics["metadata"]["dataset_names"])
@@ -2819,28 +2873,54 @@ class LeRobotMixtureDataset(Dataset):
         for tag, stats_data in cached_statistics.items():
             if tag == "metadata":  # Skip metadata field
                 continue
+
+            # Find a modality template from current datasets for this tag.
+            template_meta = None
+            for dataset in self.datasets:
+                if dataset.tag == tag:
+                    template_meta = dataset.metadata
+                    break
+            if template_meta is None:
+                continue
+
+            used_action_keys, used_state_keys = _collect_used_keys_for_tag(tag)
+
+            action_stats: dict
+            state_stats: dict
+
+            raw_action = stats_data.get("action", {}) if isinstance(stats_data, dict) else {}
+            raw_state = stats_data.get("state", {}) if isinstance(stats_data, dict) else {}
+
+            if _is_flattened_combined_stats(raw_action):
+                action_stats = _expand_flattened_stats(
+                    raw_action,
+                    used_action_keys,
+                    template_meta.modalities.action,
+                    "action",
+                )
+            else:
+                action_stats = raw_action
+
+            if _is_flattened_combined_stats(raw_state):
+                state_stats = _expand_flattened_stats(
+                    raw_state,
+                    used_state_keys,
+                    template_meta.modalities.state,
+                    "state",
+                )
+            else:
+                state_stats = raw_state
                 
             # Convert back to DatasetMetadata format
             metadata_dict = {
                 "embodiment_tag": tag,
                 "statistics": {
-                    "action": {},
-                    "state": {}
+                    "action": action_stats,
+                    "state": state_stats,
                 },
-                "modalities": {}
+                "modalities": template_meta.modalities.model_dump(),
             }
-            
-            # Convert action statistics back
-            if "action" in stats_data:
-                action_data = stats_data["action"]
-                # This is simplified - you may need to split back to sub-keys
-                metadata_dict["statistics"]["action"] = action_data
-            
-            # Convert state statistics back
-            if "state" in stats_data:
-                state_data = stats_data["state"]
-                metadata_dict["statistics"]["state"] = state_data
-            
+
             self.merged_metadata[tag] = DatasetMetadata.model_validate(metadata_dict)
         
         # Update transforms metadata for each dataset
