@@ -22,7 +22,7 @@ echo "  ckpt : ${CKPT_PATH}"
 echo "  extra: ${EXTRA_ARGS}"
 
 CUDA_VISIBLE_DEVICES=${GPU_ID} \
-    ${STAR_VLA_PYTHON} deployment/model_server/server_policy.py \
+    ${STAR_VLA_PYTHON} -u deployment/model_server/server_policy.py \
         --ckpt_path "${CKPT_PATH}" \
         --port "${PORT}" \
         --use_bf16 \
