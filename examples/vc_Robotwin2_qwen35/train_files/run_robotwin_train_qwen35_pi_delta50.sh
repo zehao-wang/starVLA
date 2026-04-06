@@ -83,7 +83,7 @@ else
     eval_interval=5000
 fi
 
-run_id=260403_${machine}_${data_mix}_qwen35_pi_delta50_c40r10
+run_id=260406_${machine}_${data_mix}_qwen35_pi_delta50_c40r10
 
 echo "MODE: ${MODE} | data_mix: ${data_mix} | batch: ${per_device_batch_size} | steps: ${max_train_steps}"
 
@@ -157,10 +157,11 @@ accelerate launch \
   --datasets.vla_data.per_device_batch_size ${per_device_batch_size} \
   --datasets.vla_data.data_root_dir ${data_root} \
   --datasets.vla_data.data_mix ${data_mix} \
-    --datasets.vla_data.action_mode ${action_mode} \
+  --datasets.vla_data.action_mode ${action_mode} \
   --datasets.vla_data.action_type delta_qpos \
-    --datasets.vla_data.normalization_mode ${normalization_mode} \
-  --datasets.vla_data.action_mode_apply_keys [action.left_joints,action.right_joints] \
+  --datasets.vla_data.normalization_mode ${normalization_mode} \
+  --datasets.vla_data.action_mode_apply_keys "[action.left_joints,action.right_joints]" \
+  --datasets.vla_data.include_state true \
   --trainer.freeze_modules ${freeze_module_list} \
   --trainer.max_train_steps ${max_train_steps} \
   --trainer.num_warmup_steps ${num_warmup_steps} \

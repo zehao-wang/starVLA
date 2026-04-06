@@ -85,6 +85,7 @@ class Qwen35_PI(baseframework):
         self.future_action_window_size = config.framework.action_model.future_action_window_size
         self.past_action_window_size = config.framework.action_model.past_action_window_size
         self.use_state_input = bool(getattr(config.datasets.vla_data, "include_state", False))
+        logger.info(f"[Qwen35PI] include_state (use_state_input) = {self.use_state_input}")
         # UNUSED: chunk_len is kept for reference only; the model predicts future_action_window_size+1
         # steps and past_action_window_size is not fed into the action head.
         # self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
