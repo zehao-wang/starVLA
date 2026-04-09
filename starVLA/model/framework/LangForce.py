@@ -20,6 +20,7 @@ if str(_workspace_root) not in sys.path:
     sys.path.insert(0, str(_workspace_root))
 
 from typing import List, Optional, Tuple, Set
+import os
 from tqdm import tqdm
 import torch
 import torch.nn as nn
@@ -35,17 +36,12 @@ logger = initialize_overwatch(__name__)
 # HuggingFace Default / LLaMa-2 IGNORE_INDEX (for labels)
 IGNORE_INDEX = -100
 
-# ===== Qwen special tokens (you confirmed) =====
-VISION_START_TOKEN_INDEX = 151652  # <|vision_start|>
-VISION_END_TOKEN_INDEX   = 151654  # <|vision_end|>
-IMAGE_TOKEN_INDEX        = 151655  # <|image_pad|>
-VIDEO_TOKEN_INDEX        = 151656  # <|video_pad|>
-IM_START_TOKEN_INDEX     = 151644  # <|im_start|>
-IM_END_TOKEN_INDEX       = 151645  # <|im_end|>
+# Special token IDs are resolved lazily from the tokenizer in _ensure_special_token_ids().
+# Do NOT hardcode model-specific IDs here — they differ across Qwen versions.
 
 from starVLA.model.framework.base_framework import baseframework
 from starVLA.model.modules.vlm import get_vlm_model
-from starVLA.model.modules.action_model.GR00T_ActionHeader import get_action_model, FlowmatchingActionHead
+from starVLA.model.modules.action_model.GR00T_ActionHeader_enhanced import get_action_model, FlowmatchingActionHead
 from starVLA.training.trainer_utils.trainer_tools import resize_images
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 
@@ -93,6 +89,8 @@ class LangForce(baseframework):
 
         self.future_action_window_size = config.framework.action_model.future_action_window_size
         self.past_action_window_size = config.framework.action_model.past_action_window_size
+        self.use_state_input = bool(getattr(config.datasets.vla_data, "include_state", False))
+        logger.info(f"[LangForce] include_state (use_state_input) = {self.use_state_input}")
         self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
 
         # ===== Loss weights =====
@@ -119,8 +117,15 @@ class LangForce(baseframework):
         self.kl_gate_min = float(self.config.framework.get("kl_gate_min", 0.0))
         self.kl_gate_max = float(self.config.framework.get("kl_gate_max", 1.0))
 
-        # cache some special token ids from tokenizer lazily
-        self._im_end_id = None
+        # Special token IDs — resolved lazily from the tokenizer in _ensure_special_token_ids()
+        self._special_tok_inited = False
+        self._im_end_id = None        # kept for backward compat; set by _ensure_special_token_ids
+        self._vision_start_id = None
+        self._vision_end_id   = None
+        self._image_token_id  = None
+        self._video_token_id  = None
+        self._im_start_id     = None
+        self._pad_id          = None
 
         # EMA buffer for posterior language-span NLL
         self.register_buffer("post_nll_ema", torch.tensor(0.0, dtype=torch.float32))
@@ -129,6 +134,36 @@ class LangForce(baseframework):
     # ---------------------------------------------------------------------
     # Token id helpers
     # ---------------------------------------------------------------------
+    def _ensure_special_token_ids(self, tokenizer):
+        """Lazily resolve all special token IDs from the actual tokenizer (model-agnostic)."""
+        if self._special_tok_inited:
+            return
+
+        def _tid(name):
+            tid = tokenizer.convert_tokens_to_ids(name)
+            # convert_tokens_to_ids returns unk_token_id when not found
+            if tid is None or tid == tokenizer.unk_token_id:
+                logger.warning(f"[LangForce] Token {name!r} not found in tokenizer — using -1 sentinel.")
+                return -1
+            return int(tid)
+
+        self._vision_start_id = _tid("<|vision_start|>")
+        self._vision_end_id   = _tid("<|vision_end|>")
+        self._image_token_id  = _tid("<|image_pad|>")
+        self._video_token_id  = _tid("<|video_pad|>")
+        self._im_start_id     = _tid("<|im_start|>")
+        self._im_end_id       = _tid("<|im_end|>")
+        self._pad_id          = tokenizer.pad_token_id
+
+        logger.info(
+            f"[LangForce] Special token IDs — "
+            f"vision_start={self._vision_start_id}, vision_end={self._vision_end_id}, "
+            f"image_pad={self._image_token_id}, video_pad={self._video_token_id}, "
+            f"im_start={self._im_start_id}, im_end={self._im_end_id}, "
+            f"pad={self._pad_id}"
+        )
+        self._special_tok_inited = True
+
     def _ensure_action_token_ids(self, tokenizer):
         if self.action_token_ids is None:
             self.action_token_ids = {
@@ -137,8 +172,7 @@ class LangForce(baseframework):
             }
 
     def _ensure_im_end_id(self, tokenizer):
-        if self._im_end_id is None:
-            self._im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+        self._ensure_special_token_ids(tokenizer)
 
     def _find_last_pos(self, seq_1d: torch.Tensor, token_id: int) -> int:
         idx = (seq_1d == int(token_id)).nonzero(as_tuple=True)[0]
@@ -260,18 +294,20 @@ class LangForce(baseframework):
         posteriori_action_starts: torch.Tensor, # [B]
     ) -> torch.Tensor:
         tokenizer = self.qwen_vl_interface.processor.tokenizer
-        self._ensure_im_end_id(tokenizer)
+        self._ensure_special_token_ids(tokenizer)
 
-        pad_id = tokenizer.pad_token_id
         ignore_ids: Set[int] = set()
-        if pad_id is not None:
-            ignore_ids.add(int(pad_id))
-        ignore_ids.add(int(IMAGE_TOKEN_INDEX))
-        ignore_ids.add(int(VIDEO_TOKEN_INDEX))
-        ignore_ids.add(int(VISION_START_TOKEN_INDEX))
-        ignore_ids.add(int(VISION_END_TOKEN_INDEX))
-        ignore_ids.add(int(IM_START_TOKEN_INDEX))
-        ignore_ids.add(int(IM_END_TOKEN_INDEX))
+        for tid in [
+            self._pad_id,
+            self._image_token_id,
+            self._video_token_id,
+            self._vision_start_id,
+            self._vision_end_id,
+            self._im_start_id,
+            self._im_end_id,
+        ]:
+            if tid is not None and int(tid) >= 0:
+                ignore_ids.add(int(tid))
 
         B = int(priori_input_ids.shape[0])
         K = self.num_latent_action_query
@@ -296,7 +332,7 @@ class LangForce(baseframework):
                 continue
 
             # ===== post language span: [last(vision_end)+1 : action_start) =====
-            v_end_post = self._find_last_pos(ids_post, VISION_END_TOKEN_INDEX)
+            v_end_post = self._find_last_pos(ids_post, self._vision_end_id)
             if v_end_post == -1:
                 continue
             lang_start_post = v_end_post + 1
@@ -410,7 +446,9 @@ class LangForce(baseframework):
         instructions_posteriori = [example["lang"] + self.latent_action_query for example in examples]  # L + A
 
         actions = [example["action"] for example in examples]
-        state = [example["state"] for example in examples] if "state" in examples[0] else None
+        state = None
+        if self.use_state_input and "state" in examples[0]:
+            state = [example["state"] for example in examples]
 
         # ===== Step 1: Priori Branch (V + A + L) =====
         qwen_inputs_priori = self.qwen_vl_interface.build_qwenvl_inputs(
@@ -542,7 +580,14 @@ class LangForce(baseframework):
                 batch_images.append([to_pil_preserve(imgs)])
 
         instructions_posteriori = [ex["lang"] + self.latent_action_query for ex in examples]
-        state = [ex["state"] for ex in examples] if "state" in examples[0] else None
+        state = None
+        if self.use_state_input and "state" in examples[0]:
+            state = [ex["state"] for ex in examples]
+
+        debug_state_shape = os.getenv("STARVLA_DEBUG_STATE_SHAPE", "0").lower() in {"1", "true", "yes", "on"}
+        if debug_state_shape:
+            raw_shape = np.array(state).shape if state is not None else None
+            print(f"[LangForce.predict_action] raw state shape: {raw_shape}")
 
         train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", None)
         if train_obs_image_size:
@@ -572,7 +617,18 @@ class LangForce(baseframework):
 
         state_tensor = None
         if state is not None:
-            state_tensor = torch.from_numpy(np.array(state)).to(action_hidden.device, dtype=action_hidden.dtype)
+            state_np = np.array(state)
+            if state_np.ndim == 1:
+                state_np = state_np[None, None, :]
+            elif state_np.ndim == 2:
+                state_np = state_np[:, None, :]
+            elif state_np.ndim != 3:
+                raise ValueError(f"Unsupported state shape {state_np.shape}, expected [B, D] or [B, 1, D].")
+
+            if debug_state_shape:
+                print(f"[LangForce.predict_action] normalized state shape: {state_np.shape}")
+
+            state_tensor = torch.from_numpy(state_np).to(action_hidden.device, dtype=action_hidden.dtype)
 
         with torch.autocast("cuda", dtype=torch.float32):
             pred_actions = self.action_model.predict_action(action_hidden, state_tensor)
@@ -582,31 +638,25 @@ class LangForce(baseframework):
 
 if __name__ == "__main__":
     from omegaconf import OmegaConf
-    import debugpy
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config_yaml", type=str, default="./examples/Robotwin/train_files/starvla_cotrain_robotwin.yaml")
+    parser.add_argument("--config", type=str, required=True)
     args, clipargs = parser.parse_known_args()
 
-    debugpy.listen(("0.0.0.0", 10092))
-    print("🔍 Rank 0 waiting for debugger attach on port 10092...")
-    debugpy.wait_for_client()
-
-    args.config_yaml = "examples/MultiRobot/train_files/starvla_cotrain_multiRobot.yaml"
-    cfg = OmegaConf.load(args.config_yaml)
+    cfg = OmegaConf.load(args.config)
 
     model: LangForce = LangForce(cfg)
     print(model)
 
     image = Image.fromarray(np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8))
     sample = {
-        "action": np.random.uniform(-1, 1, size=(16, 7)).astype(np.float16),
+        "action": np.random.uniform(-1, 1, size=(16, cfg.framework.action_model.action_dim)).astype(np.float16),
         "image": [image],
         "lang": "Put all the toys in the child's room ... inside the toy box.",
     }
     sample2 = {
-        "action": np.random.uniform(-1, 1, size=(16, 7)).astype(np.float16),
+        "action": np.random.uniform(-1, 1, size=(16, cfg.framework.action_model.action_dim)).astype(np.float16),
         "image": [image],
         "lang": "Put all the toys in the child's room ... inside the toy box.",
     }

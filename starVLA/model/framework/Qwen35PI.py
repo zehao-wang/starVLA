@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import os
 from PIL import Image
 
 
@@ -185,6 +186,11 @@ class Qwen35_PI(baseframework):
         state = None
         if self.use_state_input and "state" in examples[0]:
             state = [example["state"] for example in examples]  # [B, 1, state_dim]
+
+        debug_state_shape = os.getenv("STARVLA_DEBUG_STATE_SHAPE", "0").lower() in {"1", "true", "yes", "on"}
+        if debug_state_shape:
+            raw_shape = np.array(state).shape if state is not None else None
+            print(f"[Qwen35PI.predict_action] raw state shape: {raw_shape}")
         
         train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", None)
         if train_obs_image_size:
@@ -205,7 +211,19 @@ class Qwen35_PI(baseframework):
             vl_embs_list = list(all_hidden[1:]) # NOTE: skip embedding layer
             base_hidden = vl_embs_list[-1]
 
-        state = torch.from_numpy(np.array(state)).to(base_hidden.device, dtype=base_hidden.dtype) if state is not None else None
+        if state is not None:
+            state_np = np.array(state)
+            if state_np.ndim == 1:
+                state_np = state_np[None, None, :]
+            elif state_np.ndim == 2:
+                state_np = state_np[:, None, :]
+            elif state_np.ndim != 3:
+                raise ValueError(f"Unsupported state shape {state_np.shape}, expected [B, D] or [B, 1, D].")
+
+            if debug_state_shape:
+                print(f"[Qwen35PI.predict_action] normalized state shape: {state_np.shape}")
+
+            state = torch.from_numpy(state_np).to(base_hidden.device, dtype=base_hidden.dtype)
         # Action expert forward and loss
         with torch.autocast("cuda", dtype=torch.float32):
             pred_actions = self.action_model.predict_action(vl_embs_list, state)  # (B, chunk_len, action_dim)
