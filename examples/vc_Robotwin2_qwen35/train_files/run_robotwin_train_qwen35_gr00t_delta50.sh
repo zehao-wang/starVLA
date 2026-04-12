@@ -6,8 +6,8 @@
 #   and cluster-specific NCCL_* vars before invoking this script.
 #
 # Usage (single-node):
-#   MACHINE=l40s bash run_robotwin_train_qwen35_pi.sh
-#   MODE=debug   bash run_robotwin_train_qwen35_pi.sh
+#   MACHINE=l40s bash run_robotwin_train_qwen35_gr00t_delta50.sh
+#   MODE=debug   bash run_robotwin_train_qwen35_gr00t_delta50.sh
 # ---------------------------------------------------------------------------
 
 set -e
@@ -55,11 +55,10 @@ export NCCL_TIMEOUT=${NCCL_TIMEOUT:-1000}
 # ---------------------------------------------------------------------------
 MODE=${MODE:-train}
 
-Framework_name=Qwen35Fast
+Framework_name=Qwen35GR00T
 freeze_module_list=''
 base_vlm=playground/Pretrained_models/Qwen3.5-2B
-base_vlm_action=playground/Pretrained_models/Qwen3.5-2B-Action
-config_yaml=./examples/vc_Robotwin2_qwen35/train_files/starvla_cotrain_robotwin_qwen35_fast.yaml
+config_yaml=./examples/vc_Robotwin2_qwen35/train_files/starvla_cotrain_robotwin_qwen35_gr00t.yaml
 run_root_dir=./results/Checkpoints
 action_mode=delta
 normalization_mode=q99
@@ -84,11 +83,7 @@ else
     eval_interval=5000
 fi
 
-# Add FAST action tokens to base VLM if not already done
-bash examples/vc_Robotwin2_qwen35/train_files/add_fast_tokens.sh ${base_vlm} ${base_vlm_action}
-if [ $? -ne 0 ]; then exit 1; fi
-
-run_id=260409_${machine}_${data_mix}_qwen35_fast_delta50_c40r10
+run_id=260411_${machine}_${data_mix}_qwen35_gr00t_delta50_c40r10
 
 echo "MODE: ${MODE} | data_mix: ${data_mix} | batch: ${per_device_batch_size} | steps: ${max_train_steps}"
 
@@ -156,16 +151,17 @@ accelerate launch \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
   --framework.name ${Framework_name} \
-  --framework.qwenvl.base_vlm ${base_vlm_action} \
+  --framework.qwenvl.base_vlm ${base_vlm} \
   --framework.action_model.future_action_window_size 49 \
   --framework.action_model.action_horizon 50 \
   --datasets.vla_data.per_device_batch_size ${per_device_batch_size} \
   --datasets.vla_data.data_root_dir ${data_root} \
   --datasets.vla_data.data_mix ${data_mix} \
-    --datasets.vla_data.action_mode ${action_mode} \
+  --datasets.vla_data.action_mode ${action_mode} \
   --datasets.vla_data.action_type delta_qpos \
-    --datasets.vla_data.normalization_mode ${normalization_mode} \
-  --datasets.vla_data.action_mode_apply_keys [action.left_joints,action.right_joints] \
+  --datasets.vla_data.normalization_mode ${normalization_mode} \
+  --datasets.vla_data.action_mode_apply_keys "[action.left_joints,action.right_joints]" \
+  --datasets.vla_data.include_state true \
   --trainer.freeze_modules ${freeze_module_list} \
   --trainer.max_train_steps ${max_train_steps} \
   --trainer.num_warmup_steps ${num_warmup_steps} \

@@ -74,7 +74,7 @@ if [ "$MODE" = "debug" ]; then
     eval_interval=25
 else
     data_mix=robotwin_all_50
-    data_root=/shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot/lerobot_robotwin_mixed_c40r10_vc_train
+    data_root=/shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot/lerobot_robotwin_mixed_c40r450_vc_train
     per_device_batch_size=${per_device_batch_size}
     max_train_steps=50000
     num_warmup_steps=5000
@@ -83,7 +83,7 @@ else
     eval_interval=5000
 fi
 
-run_id=260406_${machine}_${data_mix}_qwen35_langforce_delta50_c40r10
+run_id=260409_${machine}_${data_mix}_qwen35_langforce_delta50_c40r10
 
 echo "MODE: ${MODE} | data_mix: ${data_mix} | batch: ${per_device_batch_size} | steps: ${max_train_steps}"
 
