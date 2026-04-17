@@ -1,0 +1,13 @@
+# Patch pins for the SimplerEnv runtime conda env used by vc_simplerenv_qwen35.
+#
+# Apply inside the simulator env, not the starVLA policy-server env:
+#   conda activate simpler_env
+#   python -m pip install -r examples/vc_simplerenv_qwen35/eval_files/requirements_simplerenv_patch.txt
+#
+# Why these pins:
+# - sapien==2.2.2 / ManiSkill2_real2sim can segfault in controller FK with
+#   NumPy 2.x during env.step.
+# - opencv-python newer than the SimplerEnv-era stack may pull newer NumPy
+#   wheels or native libraries that make the simulator less stable.
+numpy==1.24.0
+opencv-python==4.6.0.66

@@ -27,6 +27,7 @@ import os
 import hashlib
 import json, torch
 import copy
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Sequence
@@ -900,18 +901,25 @@ class LeRobotSingleDataset(Dataset):
         else:
             le_statistics = None
 
-        if dist.is_initialized():
-            dist.barrier()
-
         if le_statistics is None:
-            le_statistics = _load_stats_cache(
-                stats_path,
-                stats_cache_config,
-                invalidate_legacy=False,
-            )
+            # Avoid NCCL barrier timeout while rank0 is doing long-running stats build.
+            # Non-main ranks poll for the generated cache file instead.
+            wait_timeout_s = int(os.environ.get("STARVLA_STATS_SYNC_TIMEOUT", "14400"))
+            poll_interval_s = int(os.environ.get("STARVLA_STATS_SYNC_POLL_INTERVAL", "5"))
+            deadline = time.time() + wait_timeout_s
+            while time.time() < deadline:
+                le_statistics = _load_stats_cache(
+                    stats_path,
+                    stats_cache_config,
+                    invalidate_legacy=False,
+                )
+                if le_statistics is not None:
+                    break
+                time.sleep(poll_interval_s)
+
             if le_statistics is None:
                 raise RuntimeError(
-                    f"Dataset statistics cache is missing or invalid after sync: {stats_path}"
+                    f"Dataset statistics cache is missing or invalid after waiting {wait_timeout_s}s: {stats_path}"
                 )
 
         for stat in le_statistics.values():
@@ -1016,6 +1024,12 @@ class LeRobotSingleDataset(Dataset):
             try:
                 with open(steps_path, "rb") as f:
                     cached_data = pickle.load(f)
+                # Restore counters used by dataset diagnostics logs.
+                self._total_trajectories = int(cached_data.get("num_trajectories", len(self.trajectory_ids)))
+                self._processed_trajectories = int(cached_data.get("processed_trajectories", self._total_trajectories))
+                self._skipped_trajectories = int(cached_data.get("skipped_trajectories", max(self._total_trajectories - self._processed_trajectories, 0)))
+                self._raw_total_steps = int(cached_data.get("raw_total_steps", sum(int(x) for x in self.trajectory_lengths)))
+                self._effective_steps = int(cached_data.get("total_steps", len(cached_data.get("steps", []))))
                 return cached_data["steps"]
             except Exception as e:
                 # include EOFError / PickleError / KeyError
@@ -1032,6 +1046,9 @@ class LeRobotSingleDataset(Dataset):
                 "config_key": config_key,
                 "steps": all_steps,
                 "num_trajectories": len(self.trajectory_ids),
+                "processed_trajectories": int(getattr(self, "_processed_trajectories", len(self.trajectory_ids))),
+                "skipped_trajectories": int(getattr(self, "_skipped_trajectories", 0)),
+                "raw_total_steps": int(getattr(self, "_raw_total_steps", len(all_steps))),
                 "total_steps": len(all_steps),
                 "computed_timestamp": pd.Timestamp.now().isoformat(),
                 "delete_pause_frame": self.delete_pause_frame,
@@ -1053,6 +1070,13 @@ class LeRobotSingleDataset(Dataset):
         # ---------- read by all rank ----------
         with open(steps_path, "rb") as f:
             cached_data = pickle.load(f)
+
+        # Restore counters used by dataset diagnostics logs.
+        self._total_trajectories = int(cached_data.get("num_trajectories", len(self.trajectory_ids)))
+        self._processed_trajectories = int(cached_data.get("processed_trajectories", self._total_trajectories))
+        self._skipped_trajectories = int(cached_data.get("skipped_trajectories", max(self._total_trajectories - self._processed_trajectories, 0)))
+        self._raw_total_steps = int(cached_data.get("raw_total_steps", sum(int(x) for x in self.trajectory_lengths)))
+        self._effective_steps = int(cached_data.get("total_steps", len(cached_data.get("steps", []))))
     
         return cached_data["steps"]
 
@@ -1073,11 +1097,13 @@ class LeRobotSingleDataset(Dataset):
         all_steps: list[tuple[int, int]] = []
         skipped_trajectories = 0
         processed_trajectories = 0
+        raw_total_steps = 0
         
         # Check if language modality is configured
         has_language_modality = 'language' in self.modality_keys and len(self.modality_keys['language']) > 0
         # TODO why trajectory_length here, why not use data length?
         for trajectory_id, trajectory_length in tqdm(zip(self.trajectory_ids, self.trajectory_lengths), total=len(self.trajectory_ids), desc="Getting All Step"):
+            raw_total_steps += int(trajectory_length)
             try:
                 if self._lerobot_version == "v2.0":
                     data = self.get_trajectory_data(trajectory_id)
@@ -1108,6 +1134,13 @@ class LeRobotSingleDataset(Dataset):
         
             for base_index in range(trajectory_length):
                 all_steps.append((trajectory_id, base_index))
+
+        # Save counters for higher-level logger.
+        self._total_trajectories = int(len(self.trajectory_ids))
+        self._processed_trajectories = int(processed_trajectories)
+        self._skipped_trajectories = int(skipped_trajectories)
+        self._raw_total_steps = int(raw_total_steps)
+        self._effective_steps = int(len(all_steps))
                 
         # Print summary statistics
         print(f"Single-process summary: Processed {processed_trajectories} trajectories, skipped {skipped_trajectories} empty trajectories")
@@ -1771,7 +1804,9 @@ class LeRobotSingleDataset(Dataset):
             value = self.curr_traj_data[original_key].iloc[step_indices[i]] # TODO check v2.0 
             task_indices.append(value if isinstance(value, (int, float)) else value.item())
 
-        return self.tasks.loc[task_indices]["task"].tolist()
+        tasks = self.tasks.loc[task_indices]["task"].tolist()
+        # Normalize language strings early so downstream token boundaries are stable.
+        return [t.strip() if isinstance(t, str) else t for t in tasks]
 
     def get_data_by_modality(
         self,

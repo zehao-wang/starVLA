@@ -6,8 +6,8 @@
 #   and cluster-specific NCCL_* vars before invoking this script.
 #
 # Usage (single-node):
-#   MACHINE=l40s bash run_robotwin_train_qwen35_pi.sh
-#   MODE=debug   bash run_robotwin_train_qwen35_pi.sh
+#   MACHINE=l40s bash run_simplerenv_train_qwen35_fast_delta16.sh
+#   MODE=debug   bash run_simplerenv_train_qwen35_fast_delta16.sh
 # ---------------------------------------------------------------------------
 
 set -e
@@ -55,17 +55,18 @@ export NCCL_TIMEOUT=${NCCL_TIMEOUT:-1000}
 # ---------------------------------------------------------------------------
 MODE=${MODE:-train}
 
-Framework_name=Qwen35PI
+Framework_name=Qwen35Fast
 freeze_module_list=''
 base_vlm=playground/Pretrained_models/Qwen3.5-2B
-config_yaml=./examples/vc_Robotwin2_qwen35/train_files/starvla_cotrain_robotwin_qwen35_pi.yaml
+base_vlm_action=playground/Pretrained_models/Qwen3.5-2B-Action
+config_yaml=./examples/vc_simplerenv_qwen35/train_files/starvla_cotrain_simplerenv_qwen35_fast.yaml
 run_root_dir=./results/Checkpoints
-action_mode=delta
+action_mode=abs
 normalization_mode=q99
 
 if [ "$MODE" = "debug" ]; then
-    data_root=/shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot/lerobot_robotwin_rand20k_debug
-    data_mix=robotwin_debug
+    data_root=data/SimplerEnv/hf_lerobot
+    data_mix=bridge_rt_1
     per_device_batch_size=1
     max_train_steps=50
     num_warmup_steps=20
@@ -73,17 +74,21 @@ if [ "$MODE" = "debug" ]; then
     logging_frequency=10
     eval_interval=25
 else
-    data_mix=robotwin_all_50
-    data_root=/shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot/lerobot_robotwin_mixed_c40r450_vc_train
+    data_mix=bridge_rt_1
+    data_root=data/SimplerEnv/hf_lerobot
     per_device_batch_size=${per_device_batch_size}
-    max_train_steps=150000
+    max_train_steps=100000
     num_warmup_steps=5000
     save_interval=1000
     logging_frequency=100
     eval_interval=5000
 fi
 
-run_id=260409_${machine}_${data_mix}_qwen35_pi_delta50_c40r10
+# Add FAST action tokens to base VLM if not already done
+bash examples/vc_simplerenv_qwen35/train_files/add_fast_tokens.sh ${base_vlm} ${base_vlm_action}
+if [ $? -ne 0 ]; then exit 1; fi
+
+run_id=260412_${machine}_${data_mix}_qwen35_fast_simplerenv
 
 echo "MODE: ${MODE} | data_mix: ${data_mix} | batch: ${per_device_batch_size} | steps: ${max_train_steps}"
 
@@ -98,7 +103,7 @@ cp $0 ${output_dir}/
 # Auto-generate eval artifacts in output_dir
 #   via shared helper script
 # ---------------------------------------------------------------------------
-bash "${REPO_ROOT}/examples/vc_Robotwin2_qwen35/eval_files/batch_submission/generate_eval_artifacts.sh" \
+bash "${REPO_ROOT}/examples/vc_simplerenv_qwen35/eval_files/batch_submission/generate_eval_artifacts.sh" \
     "${REPO_ROOT}" \
     "${output_dir}" \
     "${run_id}" \
@@ -151,17 +156,15 @@ accelerate launch \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
   --framework.name ${Framework_name} \
-  --framework.qwenvl.base_vlm ${base_vlm} \
-  --framework.action_model.future_action_window_size 49 \
-  --framework.action_model.action_horizon 50 \
+  --framework.qwenvl.base_vlm ${base_vlm_action} \
+    --framework.action_model.future_action_window_size 15 \
+    --framework.action_model.action_horizon 16 \
   --datasets.vla_data.per_device_batch_size ${per_device_batch_size} \
   --datasets.vla_data.data_root_dir ${data_root} \
   --datasets.vla_data.data_mix ${data_mix} \
-  --datasets.vla_data.action_mode ${action_mode} \
-  --datasets.vla_data.action_type delta_qpos \
-  --datasets.vla_data.normalization_mode ${normalization_mode} \
-  --datasets.vla_data.action_mode_apply_keys "[action.left_joints,action.right_joints]" \
-  --datasets.vla_data.include_state true \
+    --datasets.vla_data.action_mode ${action_mode} \
+    --datasets.vla_data.action_type delta_ee \
+    --datasets.vla_data.normalization_mode ${normalization_mode} \
   --trainer.freeze_modules ${freeze_module_list} \
   --trainer.max_train_steps ${max_train_steps} \
   --trainer.num_warmup_steps ${num_warmup_steps} \
@@ -170,7 +173,7 @@ accelerate launch \
   --trainer.eval_interval ${eval_interval} \
   --run_root_dir ${run_root_dir} \
   --run_id ${run_id} \
-  --wandb_project starVLA_Robotwin \
+    --wandb_project starVLA_simplerEnv \
   --wandb_entity zekewang-ku-leuven \
   ${is_resume_flag} \
   2>&1 | tee -a "${output_dir}/train.log"

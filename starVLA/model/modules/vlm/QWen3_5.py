@@ -140,14 +140,26 @@ class _QWen3_5_VL_Interface(nn.Module):
 
         # Preparation for inference
 
-        batch_inputs = self.processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            padding=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt"
-        )
+        apply_chat_template_kwargs = {
+            "tokenize": True,
+            "add_generation_prompt": True,
+            "return_dict": True,
+            "return_tensors": "pt",
+        }
+        try:
+            batch_inputs = self.processor.apply_chat_template(
+                messages,
+                **apply_chat_template_kwargs,
+                processor_kwargs={"padding": True},
+            )
+        except (TypeError, ValueError) as exc:
+            if "processor_kwargs" not in str(exc):
+                raise
+            batch_inputs = self.processor.apply_chat_template(
+                messages,
+                **apply_chat_template_kwargs,
+                padding=True,
+            )
 
         # if solutions, mask out the solution tokens in labels
         if solutions is not None: #  here only for fast_tokenizer now. 

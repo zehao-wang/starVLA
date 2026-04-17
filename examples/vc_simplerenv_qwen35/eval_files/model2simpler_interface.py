@@ -1,8 +1,6 @@
 from collections import deque
 from typing import Optional, Sequence
 import os
-import cv2 as cv
-import matplotlib.pyplot as plt
 import numpy as np
 from transforms3d.euler import euler2axangle
 from typing import Dict
@@ -11,7 +9,7 @@ from pathlib import Path
 
 
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
-from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler
+from examples.vc_simplerenv_qwen35.eval_files.adaptive_ensemble import AdaptiveEnsembler
 
 import json
 
@@ -25,6 +23,17 @@ def _read_action_stats(policy_ckpt_path: Path, unnorm_key: str) -> dict:
     with open(stats_json) as f:
         norm_stats = json.load(f)
     return norm_stats[unnorm_key]["action"]
+
+
+def _read_state_stats(policy_ckpt_path: Path, unnorm_key: str) -> dict:
+    """Load state normalization stats from dataset_statistics.json."""
+    checkpoint_pt = Path(policy_ckpt_path)
+    run_dir = checkpoint_pt.parents[1]
+    stats_json = run_dir / "dataset_statistics.json"
+    assert stats_json.exists(), f"Missing dataset_statistics.json at {run_dir}"
+    with open(stats_json) as f:
+        norm_stats = json.load(f)
+    return norm_stats[unnorm_key]["state"]
 
 
 
@@ -101,7 +110,9 @@ class ModelClient:
         self.num_image_history = 0
 
         self.action_norm_stats = _read_action_stats(policy_ckpt_path, self.unnorm_key)
-        
+        self.state_norm_stats = _read_state_stats(policy_ckpt_path, self.unnorm_key)
+        print(f"*** state q01={self.state_norm_stats['q01']}, q99={self.state_norm_stats['q99']} ***")
+
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
@@ -120,7 +131,12 @@ class ModelClient:
         self.previous_gripper_action = None
 
     def step(
-        self, image: np.ndarray, task_description: Optional[str] = None, *args, **kwargs
+        self,
+        image: np.ndarray,
+        task_description: Optional[str] = None,
+        robot_state: Optional[np.ndarray] = None,
+        *args,
+        **kwargs,
     ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
         """
         Input:
@@ -147,14 +163,9 @@ class ModelClient:
             "image": [image],
             "lang": self.task_description,
         }
-        
-        vla_input = {
-            "examples": [example],
-            "do_sample": False,
-            "cfg_scale": self.cfg_scale,
-            "use_ddim": self.use_ddim,
-            "num_ddim_steps": self.num_ddim_steps,
-        }
+
+        if robot_state is not None:
+            example["state"] = self._normalize_state(robot_state)
 
         vla_input = {
             "examples": [example],
@@ -168,7 +179,7 @@ class ModelClient:
         
         
         # unnormalize the action
-        normalized_actions = response["data"]["normalized_actions"] # B, chunk, D        
+        normalized_actions = response["data"]["normalized_actions"] # B, chunk, D
         normalized_actions = normalized_actions[0]
         
         
@@ -226,6 +237,23 @@ class ModelClient:
         action["terminate_episode"] = np.array([0.0])
         return raw_action, action
 
+    def _normalize_state(self, state: np.ndarray) -> np.ndarray:
+        """Normalize raw robot state using q01/q99 to [-1, 1].
+
+        Formula: 2 * (x - q01) / (q99 - q01) - 1, clipped to [-1, 1].
+        Dim 6 (pad) is always forced to 0.0 (q01 == q99 == 0).
+        """
+        q01 = np.array(self.state_norm_stats["q01"], dtype=np.float32)
+        q99 = np.array(self.state_norm_stats["q99"], dtype=np.float32)
+        denom = q99 - q01
+        # Avoid division by zero for constant dims (e.g. dim 6 pad)
+        safe_denom = np.where(np.abs(denom) < 1e-8, 1.0, denom)
+        normalized = 2.0 * (state - q01) / safe_denom - 1.0
+        normalized = np.clip(normalized, -1.0, 1.0)
+        # Force pad dim (index 6) to 0
+        normalized[6] = 0.0
+        return normalized.astype(np.float32)
+
     @staticmethod
     def unnormalize_actions(normalized_actions: np.ndarray, action_norm_stats: Dict[str, np.ndarray]) -> np.ndarray:
         mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["q01"], dtype=bool))
@@ -247,12 +275,16 @@ class ModelClient:
 
 
     def _resize_image(self, image: np.ndarray) -> np.ndarray:
+        import cv2 as cv
+
         image = cv.resize(image, tuple(self.image_size), interpolation=cv.INTER_AREA)
         return image
 
     def visualize_epoch(
         self, predicted_raw_actions: Sequence[np.ndarray], images: Sequence[np.ndarray], save_path: str
     ) -> None:
+        import matplotlib.pyplot as plt
+
         images = [self._resize_image(image) for image in images]
         ACTION_DIM_LABELS = ["x", "y", "z", "roll", "pitch", "yaw", "grasp"]
 

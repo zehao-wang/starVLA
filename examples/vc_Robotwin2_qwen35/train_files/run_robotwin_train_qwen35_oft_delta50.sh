@@ -6,8 +6,8 @@
 #   and cluster-specific NCCL_* vars before invoking this script.
 #
 # Usage (single-node):
-#   MACHINE=l40s bash run_robotwin_train_qwen35_pi.sh
-#   MODE=debug   bash run_robotwin_train_qwen35_pi.sh
+#   MACHINE=l40s bash run_robotwin_train_qwen35_oft_delta50.sh
+#   MODE=debug   bash run_robotwin_train_qwen35_oft_delta50.sh
 # ---------------------------------------------------------------------------
 
 set -e
@@ -35,7 +35,6 @@ elif [[ "$machine" == "h100" ]]; then
     export LD_LIBRARY_PATH=/opt/amazon/ofi-nccl/lib64:${LD_LIBRARY_PATH}
     per_device_batch_size=8
 elif [[ "$machine" == "h200" ]]; then
-    # p5en.48xlarge — EFA (no InfiniBand), 16x enp* NICs, 8x H200 143GB
     export NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-enp}
     export FI_EFA_USE_DEVICE_RDMA=${FI_EFA_USE_DEVICE_RDMA:-1}
     export LD_LIBRARY_PATH=/opt/amazon/ofi-nccl/lib64:${LD_LIBRARY_PATH}
@@ -55,13 +54,13 @@ export NCCL_TIMEOUT=${NCCL_TIMEOUT:-1000}
 # ---------------------------------------------------------------------------
 MODE=${MODE:-train}
 
-Framework_name=Qwen35PI
+Framework_name=Qwen35OFT
 freeze_module_list=''
 base_vlm=playground/Pretrained_models/Qwen3.5-2B
-config_yaml=./examples/vc_Robotwin2_qwen35/train_files/starvla_cotrain_robotwin_qwen35_pi.yaml
+config_yaml=./examples/vc_Robotwin2_qwen35/train_files/starvla_cotrain_robotwin_qwen35_oft.yaml
 run_root_dir=./results/Checkpoints
-action_mode=delta
-normalization_mode=q99
+action_mode=abs
+normalization_mode=min_max
 
 if [ "$MODE" = "debug" ]; then
     data_root=/shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot/lerobot_robotwin_rand20k_debug
@@ -76,14 +75,14 @@ else
     data_mix=robotwin_all_50
     data_root=/shared/home/ZWA0839/Projects/VisualContextVLA/data/robotwin2/hf_lerobot/lerobot_robotwin_mixed_c40r450_vc_train
     per_device_batch_size=${per_device_batch_size}
-    max_train_steps=150000
+    max_train_steps=50000
     num_warmup_steps=5000
     save_interval=1000
     logging_frequency=100
     eval_interval=5000
 fi
 
-run_id=260409_${machine}_${data_mix}_qwen35_pi_delta50_c40r10
+run_id=260416_${machine}_${data_mix}_qwen35_oft_delta50
 
 echo "MODE: ${MODE} | data_mix: ${data_mix} | batch: ${per_device_batch_size} | steps: ${max_train_steps}"
 
@@ -115,8 +114,6 @@ fi
 
 # ---------------------------------------------------------------------------
 # Distributed args — single-node vs multi-node (driven by SLURM env vars)
-# SLURM sets CUDA_VISIBLE_DEVICES to allocated GPUs; torch.cuda.device_count()
-# therefore always reflects the correct per-node GPU count.
 # ---------------------------------------------------------------------------
 gpus_per_node=$(python3 -c "import torch; print(torch.cuda.device_count())")
 num_nodes=${SLURM_NNODES:-1}
@@ -138,9 +135,6 @@ fi
 # ---------------------------------------------------------------------------
 # Launch
 # ---------------------------------------------------------------------------
-# Point triton autotune cache to a job-scoped tmp dir.
-# Empty string causes DeepSpeed to set file_path=None → TypeError; must be a valid path.
-# The atexit write-race between GPU processes is harmless noise.
 export TRITON_CACHE_DIR=/tmp/triton_cache_${SLURM_JOB_ID:-$$}
 mkdir -p "${TRITON_CACHE_DIR}"
 
@@ -158,10 +152,10 @@ accelerate launch \
   --datasets.vla_data.data_root_dir ${data_root} \
   --datasets.vla_data.data_mix ${data_mix} \
   --datasets.vla_data.action_mode ${action_mode} \
-  --datasets.vla_data.action_type delta_qpos \
+  --datasets.vla_data.action_type abs_qpos \
   --datasets.vla_data.normalization_mode ${normalization_mode} \
   --datasets.vla_data.action_mode_apply_keys "[action.left_joints,action.right_joints]" \
-  --datasets.vla_data.include_state true \
+    --datasets.vla_data.include_state true \
   --trainer.freeze_modules ${freeze_module_list} \
   --trainer.max_train_steps ${max_train_steps} \
   --trainer.num_warmup_steps ${num_warmup_steps} \
